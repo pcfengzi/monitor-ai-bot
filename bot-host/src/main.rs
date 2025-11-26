@@ -4,22 +4,17 @@ use std::{
     fs,
     os::raw::c_char,
     path::{Path, PathBuf},
-    sync::{OnceLock},
+    sync::OnceLock,
     time::Duration,
 };
 
-use chrono::{DateTime, Utc, TimeZone};
+use chrono::{DateTime, TimeZone, Utc};
 use core_types::{LogEvent, LogLevel as HostLogLevel, Metric};
 use dotenv::dotenv;
 use libloading::{Library, Symbol};
 use plugin_api::{
-    LogLevel as PluginLogLevel,
-    MetricSample,
-    PluginContext,
-    PluginMeta,
-    PluginMetaFunc,
-    PluginRunFunc,
-    PluginRunWithContextFunc,
+    LogLevel as PluginLogLevel, MetricSample, PluginContext, PluginMeta, PluginMetaFunc,
+    PluginRunFunc, PluginRunWithContextFunc,
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -29,6 +24,10 @@ use tracing_subscriber::EnvFilter;
 
 use storage::Db;
 
+// ⭐ 新增：线程本地存储当前正在执行的插件名
+use std::cell::RefCell;
+use std::thread_local;
+
 // ============ 全局异步写入通道 ============
 
 enum StorageMsg {
@@ -37,6 +36,11 @@ enum StorageMsg {
 }
 
 static GLOBAL_SENDER: OnceLock<mpsc::UnboundedSender<StorageMsg>> = OnceLock::new();
+
+// ⭐ 新增：当前正在执行的插件名称
+thread_local! {
+    static CURRENT_PLUGIN_NAME: RefCell<Option<String>> = RefCell::new(None);
+}
 
 // ============ 配置结构 ============
 
@@ -87,12 +91,9 @@ async fn main() {
     );
 
     // 初始化数据库
-    // let db_url = "sqlite:monitor_ai.db"; // 相对路径数据库
     let db_url = std::env::var("MONITOR_AI_DB_URL")
-    .unwrap_or_else(|_| "sqlite://database/monitor_ai.db".to_string());
-    let db = Db::connect(&db_url)
-        .await
-        .expect("连接数据库失败");
+        .unwrap_or_else(|_| "sqlite://database/monitor_ai.db".to_string());
+    let db = Db::connect(&db_url).await.expect("连接数据库失败");
     info!("已连接 SQLite 数据库: {db_url}");
 
     // 初始化全局 sender + 异步存储任务
@@ -138,11 +139,9 @@ async fn main() {
 // ============ tracing 初始化 ============
 
 fn init_tracing() {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 }
 
 // ============ 配置加载 ============
@@ -222,10 +221,7 @@ fn discover_plugins(dir: &Path, ext: &str, pattern: &str) -> Vec<PathBuf> {
                 continue;
             }
 
-            let file_name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default();
+            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
 
             if !file_name.contains(pattern) {
                 continue;
@@ -261,18 +257,25 @@ fn run_plugins_once(plugins: &[PathBuf]) {
                 }
             };
             let meta: PluginMeta = meta_func();
-            let plugin_name = c_str_to_string(meta.name).unwrap_or_else(|| "<unknown>".to_string());
+            let plugin_name =
+                c_str_to_string(meta.name).unwrap_or_else(|| "<unknown>".to_string());
             let plugin_version =
                 c_str_to_string(meta.version).unwrap_or_else(|| "<unknown>".to_string());
+            let plugin_kind =
+                c_str_to_string(meta.kind).unwrap_or_else(|| "<unknown>".to_string());
 
             info!(
                 "插件信息: name={}, version={}, kind={}",
-                plugin_name,
-                plugin_version,
-                c_str_to_string(meta.kind).unwrap_or_default()
+                plugin_name, plugin_version, plugin_kind
             );
 
-            let run_with_ctx: Result<Symbol<PluginRunWithContextFunc>, _> = lib.get(b"run_with_ctx");
+            // ⭐ 在当前线程标记“当前插件名”，给日志和指标桥接使用
+            CURRENT_PLUGIN_NAME.with(|slot| {
+                *slot.borrow_mut() = Some(plugin_name.clone());
+            });
+
+            let run_with_ctx: Result<Symbol<PluginRunWithContextFunc>, _> =
+                lib.get(b"run_with_ctx");
 
             if let Ok(run_with_ctx) = run_with_ctx {
                 let mut ctx = PluginContext {
@@ -291,10 +294,18 @@ fn run_plugins_once(plugins: &[PathBuf]) {
                         run();
                     }
                     Err(e) => {
-                        error!("插件 {} 既没有 run_with_ctx 也没有 run: {e}", path.display());
+                        error!(
+                            "插件 {} 既没有 run_with_ctx 也没有 run: {e}",
+                            path.display()
+                        );
                     }
                 }
             }
+
+            // ⭐ 执行完清空当前插件名，避免污染后续调用
+            CURRENT_PLUGIN_NAME.with(|slot| {
+                *slot.borrow_mut() = None;
+            });
         }
         // lib 自动 drop
     }
@@ -312,6 +323,12 @@ extern "C" fn host_log_bridge(level: PluginLogLevel, msg: *const c_char) {
         Err(_) => "<invalid utf-8>".to_string(),
     };
 
+    // ⭐ 读取当前插件名
+    let plugin_name_opt = CURRENT_PLUGIN_NAME.with(|slot| slot.borrow().clone());
+    let plugin_label = plugin_name_opt
+        .as_deref()
+        .unwrap_or("<unknown-plugin>");
+
     let host_level = match level {
         PluginLogLevel::Debug => HostLogLevel::Debug,
         PluginLogLevel::Info => HostLogLevel::Info,
@@ -319,10 +336,11 @@ extern "C" fn host_log_bridge(level: PluginLogLevel, msg: *const c_char) {
         PluginLogLevel::Error => HostLogLevel::Error,
     };
 
+    // 写入 DB 的事件，现在带上 plugin 字段
     let event = LogEvent {
         time: Utc::now(),
         level: host_level,
-        plugin: None,
+        plugin: plugin_name_opt.clone(),
         message: message.clone(),
         fields: Default::default(),
     };
@@ -331,11 +349,14 @@ extern "C" fn host_log_bridge(level: PluginLogLevel, msg: *const c_char) {
         let _ = sender.send(StorageMsg::Log(event));
     }
 
+    // 控制台日志也加上插件名前缀
+    let decorated = format!("[{plugin_label}] {message}");
+
     match host_level {
-        HostLogLevel::Debug => tracing::debug!("{message}"),
-        HostLogLevel::Info => tracing::info!("{message}"),
-        HostLogLevel::Warn => tracing::warn!("{message}"),
-        HostLogLevel::Error => tracing::error!("{message}"),
+        HostLogLevel::Debug => tracing::debug!("{decorated}"),
+        HostLogLevel::Info => tracing::info!("{decorated}"),
+        HostLogLevel::Warn => tracing::warn!("{decorated}"),
+        HostLogLevel::Error => tracing::error!("{decorated}"),
     }
 }
 
@@ -348,9 +369,16 @@ extern "C" fn host_emit_metric_bridge(sample: MetricSample) {
 
     let time = timestamp_ms_to_datetime(sample.timestamp_ms);
 
+    // ⭐ 从线程本地拿当前插件名，默认 unknown
+    let plugin_name = CURRENT_PLUGIN_NAME.with(|slot| {
+        slot.borrow()
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string())
+    });
+
     let metric = Metric {
         time,
-        plugin: "unknown".to_string(),
+        plugin: plugin_name,
         name,
         value: sample.value,
         labels: Default::default(),
@@ -376,4 +404,3 @@ fn timestamp_ms_to_datetime(ms: i64) -> DateTime<Utc> {
         _ => Utc::now(),
     }
 }
-

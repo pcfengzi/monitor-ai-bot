@@ -18,3 +18,6 @@ core-types = { path = "../core-types" }
 storage = { path = "../storage" }
 
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
+
+tower-http = { version = "0.5", features = ["cors"] }  # 新增
+http = "1"           # 一般已经有，没有就加上

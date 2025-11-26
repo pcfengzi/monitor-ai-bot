@@ -17,6 +17,8 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use sqlx::sqlite::Sqlite;
 use sqlx::migrate::MigrateDatabase;
+use http::{Method, header};  
+use tower_http::cors::{CorsLayer, Any};
 
 #[derive(Clone)]
 struct AppState {
@@ -57,11 +59,22 @@ async fn main() {
 
     let state = AppState { db };
 
+    // 开发环境 CORS（允许前端和常用方法）
+    let cors = CorsLayer::new()
+        // 开发图省事就允许所有域名；如果你想严格一点见下面注释
+        .allow_origin(Any)
+        // 或者更严格一点：
+        // .allow_origin("http://127.0.0.1:5173".parse::<http::HeaderValue>().unwrap())
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE]);
+
+
     let app = Router::new()
         .route("/logs", get(get_logs))
         .route("/metrics", get(get_metrics))
         .route("/alerts", get(get_alerts).post(create_alert))
-        .with_state(state);
+        .with_state(state)
+        .layer(cors);  // 挂上 CORS 层;
 
     let addr: SocketAddr = "127.0.0.1:3001".parse().unwrap();
     info!("api-server 启动：http://{addr}/logs /metrics /alerts");
