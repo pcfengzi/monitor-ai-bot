@@ -1,0 +1,11 @@
+[package]
+name = "cpu-monitor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+# 关键：编译成动态库，供机器人在运行时加载
+crate-type = ["cdylib"]
+
+[dependencies]
+plugin-api = { path = "../../plugin-api" }

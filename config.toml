@@ -1,0 +1,14 @@
+[plugin]
+# 运行模式：
+# - "dev"  : 开发阶段，直接扫 target/debug
+# - "prod" : 发布阶段，扫 plugins-bin 目录
+mode = "dev"
+
+# 开发模式下插件动态库所在目录（相对项目根路径）
+dev_dir = "target/debug"
+
+# 生产模式下插件动态库所在目录
+prod_dir = "plugins-bin"
+
+# 要加载的插件文件名需要包含的关键字（防止乱加载）
+name_pattern = "_monitor"

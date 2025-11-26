@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "bot-host", "core-types",
+    "plugin-api",
+    "plugins/cpu-monitor",
+    "core-types",     
+    "storage",
+    "api-server",
+    "plugins/ai-analyzer", 
+    "workflow-core",
+    "plugins/api-monitor",
+]
+
+# 适配 edition 2024，顺便把刚才那个 warning 消掉
+resolver = "3"

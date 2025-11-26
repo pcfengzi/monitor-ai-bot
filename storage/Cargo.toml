@@ -1,0 +1,10 @@
+[package]
+name = "storage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "chrono", "macros"] }
+core-types = { path = "../core-types" }
+chrono = "0.4"
+serde_json = "1.0"

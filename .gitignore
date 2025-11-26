@@ -1,0 +1,39 @@
+# Rust build output
+/target/
+
+# Rust lock files (if library)
+/Cargo.lock
+**/Cargo.lock
+
+# Backups
+**/*.rs.bk
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.vscode/
+.history/
+
+# Independent repos
+/ai-engine/
+/docs/
+
+# Ignore all plugins except 3 samples
+/plugins/*
+!/plugins/ai-analyzer/
+!/plugins/api-monitor/
+!/plugins/cpu-monitor/
+
+
+# 数据库文件
+/database/*.db
+/database/*.db-*
+
+# 插件编译产物
+/plugins-bin/
+/plugins-bin/*.dll
+
+# Rust 编译产物
+/target/

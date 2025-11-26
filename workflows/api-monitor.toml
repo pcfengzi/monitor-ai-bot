@@ -1,0 +1,39 @@
+[[workflows]]
+name = "login_and_get_profile"
+enabled = true
+base_url = "https://api.example.com"
+
+  [[workflows.steps]]
+  id = "login"
+  method = "POST"
+  path = "/auth/login"
+  body = '{"username": "{{USER}}", "password": "{{PASS}}"}'
+
+  # 请求头可以用变量，例如 token 之类
+  [workflows.steps.headers]
+  Content-Type = "application/json"
+
+  # 从登录响应中提取 token
+  [workflows.steps.extract]
+  token = "data.token"
+
+
+  [[workflows.steps.asserts]]
+  status = 200
+
+  [[workflows.steps]]
+  id = "get_profile"
+  method = "GET"
+  path = "/user/profile"
+  body = ""
+
+  [workflows.steps.headers]
+  Authorization = "Bearer {{token}}"
+
+  # 没有要提取的字段，也要给个空表，避免 "missing field `extract`"
+  [workflows.steps.extract]
+
+  [[workflows.steps.asserts]]
+  status = 200
+  json_path = "data.user.id"
+  equals = "{{EXPECTED_USER_ID}}"
