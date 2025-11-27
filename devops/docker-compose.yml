@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  bot-host:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: bot-host
+    container_name: monitor-bot-host
+    restart: unless-stopped
+    volumes:
+      - ./database:/app/database
+      # 想在本机改 config/.env 生效的话也可以把它们挂进去：
+      - ./config.toml:/app/config.toml:ro
+      - ./.env:/app/.env:ro
+
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api-server
+    container_name: monitor-api-server
+    restart: unless-stopped
+    depends_on:
+      - bot-host
+    volumes:
+      - ./database:/app/database
+    ports:
+      - "3001:3001"
+
+  dashboard:
+    build:
+      context: ./dashboard-frontend
+      dockerfile: Dockerfile
+    container_name: monitor-dashboard
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+
+  # ai-engine:
+  #   build:
+  #     context: ./ai-engine
+  #     dockerfile: Dockerfile
+  #   container_name: monitor-ai-engine
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8000:8000"
