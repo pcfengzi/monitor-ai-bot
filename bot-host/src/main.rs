@@ -21,6 +21,8 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use plugin_api::{PluginApiInfoFunc, PluginApiInfo};
+use std::collections::HashSet;
 
 use storage::Db;
 
@@ -36,6 +38,7 @@ enum StorageMsg {
 }
 
 static GLOBAL_SENDER: OnceLock<mpsc::UnboundedSender<StorageMsg>> = OnceLock::new();
+
 
 // ⭐ 新增：当前正在执行的插件名称
 thread_local! {
@@ -69,6 +72,8 @@ async fn main() {
 
     let config = load_config();
     let plugin_cfg = config.plugin.clone().unwrap_or_default();
+    let plugin_api_registered = std::sync::Arc::new(tokio::sync::Mutex::new(HashSet::<String>::new()));
+
 
     let mode = env::var("MONITOR_AI_PLUGIN_MODE")
         .ok()
@@ -131,7 +136,7 @@ async fn main() {
 
     // 简单调度循环：每轮执行所有插件
     loop {
-        run_plugins_once(&plugins);
+        run_plugins_once(&plugins, &db, plugin_api_registered.clone()).await;
         tokio::time::sleep(Duration::from_secs(default_interval)).await;
     }
 }
@@ -236,7 +241,11 @@ fn discover_plugins(dir: &Path, ext: &str, pattern: &str) -> Vec<PathBuf> {
 
 // ============ 插件调度 ============
 
-fn run_plugins_once(plugins: &[PathBuf]) {
+async fn run_plugins_once(
+    plugins: &[PathBuf],
+    db: &Db,
+    plugin_api_registered: std::sync::Arc<tokio::sync::Mutex<HashSet<String>>>,
+) {
     for path in plugins {
         info!("执行插件: {}", path.display());
 
@@ -273,6 +282,37 @@ fn run_plugins_once(plugins: &[PathBuf]) {
             CURRENT_PLUGIN_NAME.with(|slot| {
                 *slot.borrow_mut() = Some(plugin_name.clone());
             });
+
+            // ⭐ 新增：尝试读取插件的 API 信息，并写入 DB
+            if let Ok(api_info_fn) = lib.get::<PluginApiInfoFunc>(b"plugin_api_info") {
+                let info: PluginApiInfo = api_info_fn();
+
+                let prefix = c_str_to_string(info.prefix).unwrap_or_else(|| "/".to_string());
+                let base_url = format!("http://127.0.0.1:{}{}", info.port, prefix);
+
+                {
+                    let mut guard = plugin_api_registered.lock().await;
+                    if !guard.contains(&plugin_name) {
+                        // 第一次注册，写入 DB
+                        if let Err(e) = db.upsert_plugin_api(&plugin_name, &base_url).await {
+                            error!(
+                                "注册插件 API 失败: plugin={}, base_url={}, err={e}",
+                                plugin_name, base_url
+                            );
+                        } else {
+                            info!(
+                                "已注册插件 API: plugin={}, base_url={}",
+                                plugin_name, base_url
+                            );
+                            guard.insert(plugin_name.clone());
+                        }
+                    }
+                }
+            } else {
+                // 没有 plugin_api_info，说明该插件不暴露 HTTP API，直接略过
+            }
+
+
 
             let run_with_ctx: Result<Symbol<PluginRunWithContextFunc>, _> =
                 lib.get(b"run_with_ctx");

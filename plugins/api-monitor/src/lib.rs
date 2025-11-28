@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use chrono::Utc;
 use dotenv::dotenv;
-use plugin_api::{LogLevel, MetricSample, PluginContext, PluginMeta};
+use plugin_api::{LogLevel, MetricSample, PluginContext, PluginMeta, PluginApiInfo};
 use reqwest::blocking::Client;
 use workflow_core::{
     apply_vars,
@@ -18,10 +18,19 @@ use workflow_core::{
     Workflow,
     WorkflowConfig,
 };
+use std::sync::OnceLock;
+
 
 static PLUGIN_NAME: &[u8] = b"api-monitor\0";
 static PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 static PLUGIN_KIND: &[u8] = b"workflow\0";
+
+const API_PORT: u16 = 5501;
+const API_PREFIX: &str = "/"; // 或 "/api"
+
+fn c_string(s: &str) -> *const c_char {
+    CString::new(s).unwrap().into_raw()
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn meta() -> PluginMeta {
@@ -51,6 +60,31 @@ pub extern "C" fn run_with_ctx(ctx: *mut PluginContext) {
         let c = CString::new(msg).unwrap_or_else(|_| CString::new("log error").unwrap());
         (ctx.log_fn)(level, c.as_ptr());
     };
+
+    ctx.log_info("[api-monitor] run_with_ctx 被调用");
+
+    // 启动 HTTP API server（只会启动一次）
+    START_API_ONCE.get_or_init(|| {
+        // 不能直接阻塞当前线程，开一个新线程+runtime
+        std::thread::spawn(|| {
+            let rt = Runtime::new().expect("create runtime");
+            rt.block_on(async move {
+                let app = Router::new()
+                    .route("/health", get(api_health))
+                    .route("/status", get(api_status));
+
+                let addr = format!("127.0.0.1:{}", API_PORT)
+                    .parse()
+                    .unwrap();
+                println!("[api-monitor] HTTP API 监听在 http://{}", addr);
+                axum::Server::bind(&addr)
+                    .serve(app.into_make_service())
+                    .await
+                    .unwrap();
+            });
+        });
+    });
+
 
     log(LogLevel::Info, "[api-monitor] 开始执行工作流监控");
 
@@ -301,4 +335,30 @@ fn current_timestamp_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     now.as_millis() as i64
+}
+
+// 声明自己的 HTTP API 信息
+#[unsafe(no_mangle)]
+pub extern "C" fn plugin_api_info() -> PluginApiInfo {
+    PluginApiInfo {
+        port: API_PORT,
+        prefix: c_string(API_PREFIX),
+    }
+}
+
+async fn api_health() -> impl IntoResponse {
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "plugin": NAME,
+        "version": VERSION,
+    }))
+}
+
+async fn api_status() -> impl IntoResponse {
+    // 这里可以将 DB/metrics 里的 workflow 执行情况暴露出来
+    axum::Json(serde_json::json!({
+        "workflow": "demo-flow",
+        "last_run": "2025-11-27T00:00:00Z",
+        "success_rate": 0.98
+    }))
 }

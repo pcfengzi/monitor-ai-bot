@@ -1,10 +1,13 @@
 use std::net::SocketAddr;
 use std::collections::HashMap;
+use std::sync::Arc;
+
 use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-    routing::get,
+    body::{Body, Bytes},
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Json},
+    routing::{get, any},
     Router,
 };
 use chrono::Utc;
@@ -17,12 +20,15 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use sqlx::sqlite::Sqlite;
 use sqlx::migrate::MigrateDatabase;
-use http::{Method, header};  
+use http::{Method, header, Request};
 use tower_http::cors::{CorsLayer, Any};
+
 
 #[derive(Clone)]
 struct AppState {
-    db: Db,
+    db: Arc<Db>,
+    plugin_apis: Arc<std::sync::RwLock<HashMap<String, String>>>,
+    http_client: reqwest::Client,
 }
 
 #[derive(Deserialize)]
@@ -57,7 +63,22 @@ async fn main() {
 
     info!("api-server 已连接数据库: {db_url}");
 
-    let state = AppState { db };
+        // 读取插件 API 基础映射
+    let apis = db
+        .get_all_plugin_apis()
+        .await
+        .expect("加载 plugin_apis 失败");
+    let mut map = HashMap::new();
+    for (plugin, base_url) in apis {
+        info!("插件 API: plugin={} => {}", plugin, base_url);
+        map.insert(plugin, base_url);
+    }
+
+    let state = AppState {
+        db: Arc::new(db),
+        plugin_apis: Arc::new(std::sync::RwLock::new(map)),
+        http_client: reqwest::Client::new(),
+    };
 
     // 开发环境 CORS（允许前端和常用方法）
     let cors = CorsLayer::new()
@@ -73,6 +94,10 @@ async fn main() {
         .route("/logs", get(get_logs))
         .route("/metrics", get(get_metrics))
         .route("/alerts", get(get_alerts).post(create_alert))
+        .route(
+            "/plugin-api/:plugin/*rest",
+            any(proxy_plugin_api),
+        )
         .with_state(state)
         .layer(cors);  // 挂上 CORS 层;
 
@@ -145,4 +170,89 @@ async fn create_alert(
     }
 
     Ok(Json(alert))
+}
+
+async fn proxy_plugin_api(
+    State(state): State<AppState>,
+    Path((plugin, rest)): Path<(String, String)>,
+    req: Request<Body>,  // 不用 mut 了
+) -> impl IntoResponse {
+    // 查找 base_url
+    let base_url_opt = {
+        let guard = state.plugin_apis.read().unwrap();
+        guard.get(&plugin).cloned()
+    };
+
+    let base_url = match base_url_opt {
+        Some(u) => u,
+        None => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
+            let body = Bytes::from(
+                format!("未知插件或未注册 API: {}", plugin).into_bytes()
+            );
+            return (StatusCode::NOT_FOUND, headers, body);
+        }
+    };
+
+    // 拼接目标 URL
+    let path = if rest.is_empty() {
+        "".to_string()
+    } else {
+        format!("/{}", rest.trim_start_matches('/'))
+    };
+    let target = format!("{}{}", base_url.trim_end_matches('/'), path);
+
+    // 先取出 method / headers
+    let method = req.method().clone();
+    let headers = req.headers().clone();
+
+    // 拆 request，拿到底层 body
+    let (_parts, body) = req.into_parts();
+
+    // 读取 body，限制 1MB（可以按需调大/调小）
+    let body_bytes = axum::body::to_bytes(body, 1024 * 1024)
+        .await
+        .unwrap_or_default();
+
+    let mut builder = state.http_client.request(method, &target);
+
+    // 转发部分头（可根据需要筛选）
+    for (k, v) in headers.iter() {
+        if k.as_str().eq_ignore_ascii_case("host") {
+            continue;
+        }
+        builder = builder.header(k, v);
+    }
+
+    let resp = match builder.body(body_bytes.clone()).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("转发到插件 API 失败: {e}");
+
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
+            let body = Bytes::from("调用插件 API 失败".as_bytes().to_vec());
+            return (StatusCode::BAD_GATEWAY, headers, body);
+        }
+    };
+
+    let status = StatusCode::from_u16(resp.status().as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+
+    let mut out_headers = HeaderMap::new();
+    for (name, value) in resp.headers().iter() {
+        out_headers.insert(name.clone(), value.clone());
+    }
+
+    let bytes = resp.bytes().await.unwrap_or_default();
+
+    // 三元组 (StatusCode, HeaderMap, Bytes) -> impl IntoResponse
+    (status, out_headers, Bytes::from(bytes))
 }

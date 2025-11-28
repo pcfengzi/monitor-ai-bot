@@ -1,11 +1,17 @@
 use core_types::{LogEvent, Metric, AlertEvent, AlertSeverity};
 use sqlx::{FromRow, SqlitePool};
+use chrono::{DateTime, Utc};
 
 #[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
 }
 
+#[derive(FromRow)]
+struct PluginApiRow {
+    plugin: String,
+    base_url: String,
+}
 
 
 impl Db {
@@ -58,6 +64,19 @@ impl Db {
                 severity TEXT NOT NULL,
                 title TEXT NOT NULL,
                 message TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // plugin_apis 表
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS plugin_apis (
+                plugin      TEXT PRIMARY KEY,
+                base_url    TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
             );
             "#,
         )
@@ -165,7 +184,51 @@ impl Db {
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
 
+    /// upsert 插件 API 映射
+    pub async fn upsert_plugin_api(
+        &self,
+        plugin: &str,
+        base_url: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now: DateTime<Utc> = Utc::now();
+        let now_str = now.to_rfc3339();
 
+        sqlx::query(
+            r#"
+            INSERT INTO plugin_apis (plugin, base_url, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(plugin) DO UPDATE SET
+                base_url = excluded.base_url,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(plugin)
+        .bind(base_url)
+        .bind(now_str)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 读取所有插件 API 映射（给 api-server 启动时缓存用）
+    pub async fn get_all_plugin_apis(
+        &self,
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, PluginApiRow>(
+            r#"
+            SELECT plugin, base_url
+            FROM plugin_apis
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.plugin, r.base_url))
+            .collect())
+    }
 
 
 

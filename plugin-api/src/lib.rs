@@ -54,3 +54,21 @@ pub struct PluginContext {
 
 /// 新版：带上下文的运行函数签名
 pub type PluginRunWithContextFunc = extern "C" fn(ctx: *mut PluginContext);
+
+
+
+/// 插件对外暴露的 HTTP API 信息（可选）
+#[repr(C)]
+pub struct PluginApiInfo {
+    /// 插件内部 HTTP server 监听的端口，例如 5501
+    pub port: u16,
+    /// 统一前缀，例如 "/api" 或 "/"
+    /// 如果不需要前缀，用 "/" 即可
+    pub prefix: *const c_char,
+}
+
+/// 插件可以（可选）导出这么一个函数：
+///
+/// #[unsafe(no_mangle)]
+/// pub extern "C" fn plugin_api_info() -> PluginApiInfo { ... }
+pub type PluginApiInfoFunc = unsafe extern "C" fn() -> PluginApiInfo;
