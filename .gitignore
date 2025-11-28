@@ -25,6 +25,7 @@ Desktop.ini
 !/plugins/ai-analyzer/
 !/plugins/api-monitor/
 !/plugins/cpu-monitor/
+!/plugins/agent-aggregator/
 
 
 # 数据库文件
