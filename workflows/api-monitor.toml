@@ -54,6 +54,10 @@ base_url = "https://xxxxx.xxxxx.com"
   [workflows.steps.headers]
   Content-Type = "application/json"
 
+  [workflows.steps.extract]
+  token   = "access_token"
+  user_id = "user.id"
+
   [[workflows.steps.asserts]]
   status = 200
 
