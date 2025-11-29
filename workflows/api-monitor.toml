@@ -2,7 +2,7 @@
 name = "s2c_login"
 enabled = true
 interval_secs = 60          # 每 60 秒探测一次
-base_url = "https://apipro.siyous.com"
+base_url = "https://xxxxx.xxxxx.com"
 
   [[workflows.steps]]
   id = "login"
@@ -42,7 +42,7 @@ base_url = "https://apipro.siyous.com"
 name = "s2c_get_user"
 enabled = true
 interval_secs = 120        # 每 2 分钟探测一次
-base_url = "https://apipro.siyous.com"
+base_url = "https://xxxxx.xxxxx.com"
 
   [[workflows.steps]]
   id = "get_user"
