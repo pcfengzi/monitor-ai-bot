@@ -8,6 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 plugin-api = { path = "../../plugin-api" }
+
 tokio = { version = "1.36", features = ["rt-multi-thread", "macros"] }
 axum = "0.7"
 serde = { version = "1", features = ["derive"] }
@@ -17,3 +18,6 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 lazy_static = "1"
+
+# ⭐ 插件自己用 sqlx 直连 SQLite，不动宿主 storage
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }

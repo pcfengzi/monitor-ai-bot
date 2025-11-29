@@ -2,6 +2,14 @@ use plugin_api::{PluginMeta, PluginContext, PluginApiInfo};
 use std::os::raw::c_char;
 use std::ffi::CString;
 use std::sync::OnceLock;
+mod db;
+mod router;
+mod template;
+mod risk_guard;
+mod channel;
+
+use db::init_db;
+
 
 mod router;
 mod template;
@@ -51,7 +59,10 @@ pub extern "C" fn run_with_ctx(ctx: *mut PluginContext) {
         std::thread::spawn(|| {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                router::start_server(API_PORT).await;
+                // ⭐ 初始化通知插件自己的 DB & 表
+                let _db = init_db().await;
+
+                crate::router::start_server(API_PORT).await;
             });
         });
     });
