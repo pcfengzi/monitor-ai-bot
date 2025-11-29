@@ -95,7 +95,6 @@ cargo build -p notification-center
 mode = "dev"                 # dev | prod
 dev_dir = "target/debug"
 prod_dir = "plugins-bin"
-name_pattern = "_monitor"    # 保证生成的 dll 名字里包含该关键字
 default_interval = 5
 ```
 

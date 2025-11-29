@@ -230,7 +230,6 @@ pub extern "C" fn meta() -> PluginMeta {
 mode = "dev"
 dev_dir = "target/debug"
 prod_dir = "plugins-bin"
-name_pattern = "_monitor"
 default_interval = 5
 auto_load = true
 

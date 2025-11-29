@@ -163,8 +163,6 @@ dev_dir = "target/debug"
 # 生产模式下插件动态库所在目录
 prod_dir = "plugins-bin"
 
-# 要加载的插件文件名需要包含的关键字（防止乱加载）
-name_pattern = "_monitor"
 
 # 默认调度周期（秒）
 default_interval = 5

@@ -124,7 +124,7 @@ async fn main() {
     });
 
     // 扫描插件
-    let plugins = discover_plugins(&plugin_dir, plugin_ext, &name_pattern);
+    let plugins = discover_plugins(&plugin_dir, plugin_ext);
     if plugins.is_empty() {
         info!("未发现任何插件动态库，确认已构建插件。");
     } else {
@@ -198,7 +198,7 @@ fn plugin_ext() -> &'static str {
 
 // ============ 扫描插件 ============
 
-fn discover_plugins(dir: &Path, ext: &str, pattern: &str) -> Vec<PathBuf> {
+fn discover_plugins(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut result = Vec::new();
 
     let read_dir = match fs::read_dir(dir) {
@@ -216,6 +216,7 @@ fn discover_plugins(dir: &Path, ext: &str, pattern: &str) -> Vec<PathBuf> {
                 continue;
             }
 
+            // 只检查扩展名
             let is_ext_ok = path
                 .extension()
                 .and_then(|s| s.to_str())
@@ -223,12 +224,6 @@ fn discover_plugins(dir: &Path, ext: &str, pattern: &str) -> Vec<PathBuf> {
                 .unwrap_or(false);
 
             if !is_ext_ok {
-                continue;
-            }
-
-            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
-
-            if !file_name.contains(pattern) {
                 continue;
             }
 

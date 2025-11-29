@@ -238,7 +238,6 @@ uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 mode = "dev"             # dev | prod
 dev_dir = "target/debug" # 开发环境插件所在目录
 prod_dir = "plugins-bin" # 生产环境插件所在目录
-name_pattern = "_monitor" # 文件名包含该字符串才视为插件
 default_interval = 5     # 默认调度周期（秒）
 auto_load = true         # 是否自动扫描并加载插件
 ```

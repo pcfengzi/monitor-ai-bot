@@ -107,7 +107,6 @@ monitor-ai-bot/
 mode = "dev"              # dev=扫描target/debug，prod=扫描plugins-bin
 dev_dir = "target/debug"
 prod_dir = "plugins-bin"
-name_pattern = "_monitor" # 插件文件名必须包含此关键字
 default_interval = 5      # 调度循环默认间隔
 auto_load = true          # 是否自动加载目录下所有插件
 
