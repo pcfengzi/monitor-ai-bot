@@ -1,6 +1,7 @@
 // plugins/notification-center/src/router.rs
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::net::TcpListener;
 
 use axum::{
     extract::Path,
@@ -15,7 +16,7 @@ use crate::channel;
 use crate::db;
 use crate::metrics_bridge::HostBridge;
 use crate::risk_guard;
-use crate::types::{InternalMessage, MessageStatus, SendRequest};
+use crate::types::{Channel, InternalMessage, MessageStatus, SendRequest};
 
 type Tx = mpsc::Sender<InternalMessage>;
 type Rx = mpsc::Receiver<InternalMessage>;
@@ -43,9 +44,8 @@ pub async fn start_server() -> Result<(), Box<dyn std::error::Error + Send + Syn
 
     println!("[notification-center] listen at http://{addr}");
 
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await?;
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
 }
@@ -169,7 +169,7 @@ async fn process_message(msg: &mut InternalMessage) {
             .update_status_final(
                 &msg.msg_id,
                 MessageStatus::Blocked,
-                &channel::Channel::Inbox,
+                &Channel::Inbox,
                 "",
                 Some(reason.clone()),
                 msg.retries,
@@ -193,7 +193,7 @@ async fn process_message(msg: &mut InternalMessage) {
     )
     .first()
     .cloned()
-    .unwrap_or(channel::Channel::Inbox);
+    .unwrap_or(Channel::Inbox);
 
     let tpl = db
         .get_template(&msg.req.scene, &primary_channel)

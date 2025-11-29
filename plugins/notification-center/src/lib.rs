@@ -7,7 +7,6 @@ mod channel;
 mod types;
 mod metrics_bridge;
 
-use std::ffi::CString;
 use std::os::raw::c_char;
 use std::thread;
 

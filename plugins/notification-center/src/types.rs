@@ -8,6 +8,8 @@ pub enum Channel {
     Email,
     Push,
     Inbox,
+    DingTalk,
+    Wecom,
 }
 
 impl Channel {
@@ -17,6 +19,8 @@ impl Channel {
             Channel::Email => "email",
             Channel::Push => "push",
             Channel::Inbox => "inbox",
+            Channel::DingTalk => "dingtalk",
+            Channel::Wecom => "wecom",
         }
     }
 }

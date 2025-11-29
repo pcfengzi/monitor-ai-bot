@@ -3,13 +3,13 @@ pub mod sms;
 pub mod email;
 pub mod push;
 pub mod inbox;
+pub mod dingtalk;
+pub mod wecom;
 
-use rand::Rng;
 
 use crate::db;
 use crate::metrics_bridge::HostBridge;
 use crate::types::{Channel, MessageStatus};
-use crate::host_bridge;
 
 /// 场景分类：这里可以以后从 DB 配置，这里先写死
 pub enum SceneCategory {
@@ -36,7 +36,7 @@ pub fn classify_scene(scene: &str) -> SceneCategory {
 }
 
 /// 根据场景，给出渠道优先级列表
-fn priority_channels(scene: &str, hint: Option<&str>) -> Vec<Channel> {
+pub fn priority_channels(scene: &str, hint: Option<&str>) -> Vec<Channel> {
     use SceneCategory::*;
     let cat = classify_scene(scene);
 
@@ -78,13 +78,13 @@ pub async fn send_with_fallback(
 ) -> (Channel, MessageStatus, Option<String>, f64) {
     let db = db::db();
     let pri = priority_channels(scene, channel_hint);
-    let mut rng = rand::thread_rng();
 
     for ch in pri {
         // 用户偏好：允许这个渠道吗？
         match db.is_channel_enabled(user_id, &ch).await {
             Ok(false) => {
-                continue; // 用户关掉了这个渠道
+                // 用户关掉了这个渠道
+                continue;
             }
             Err(e) => {
                 HostBridge::log_static(
@@ -95,8 +95,10 @@ pub async fn send_with_fallback(
             _ => {}
         }
 
-        // 模拟渠道不可用：这里先简单用随机（现实中应该是 SDK / API 返回）
-        let channel_up: bool = rng.gen_range(0..100) > 5; // 5% 概率认定渠道 down
+        // 模拟渠道不可用：用 rand::random，不保留 ThreadRng
+        // 0..100 中有 5 个值视为 down，大约 5% 概率
+        let r: u8 = rand::random::<u8>();
+        let channel_up: bool = (r % 100) >= 5;
         if !channel_up {
             HostBridge::log_static(
                 plugin_api::LogLevel::Warn,
@@ -114,6 +116,8 @@ pub async fn send_with_fallback(
             Channel::Email => email::send(user_id, content).await,
             Channel::Push => push::send(user_id, content).await,
             Channel::Inbox => inbox::send(user_id, content).await,
+            Channel::DingTalk => dingtalk::send(user_id, content).await,
+            Channel::Wecom => wecom::send(user_id, content).await,
         };
 
         HostBridge::metric_static(
