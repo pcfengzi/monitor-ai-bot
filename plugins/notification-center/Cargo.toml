@@ -1,6 +1,6 @@
 [package]
 name = "notification-center"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [lib]
@@ -9,15 +9,17 @@ crate-type = ["cdylib"]
 [dependencies]
 plugin-api = { path = "../../plugin-api" }
 
-tokio = { version = "1.36", features = ["rt-multi-thread", "macros"] }
-axum = "0.7"
+tokio = { version = "1.36", features = ["rt-multi-thread", "macros", "time"] }
+axum  = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 once_cell = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
-regex = "1"
-lazy_static = "1"
-
-# ⭐ 插件自己用 sqlx 直连 SQLite，不动宿主 storage
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+sqlx = { version = "0.7", features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "chrono"
+]}
+thiserror = "1"
+rand = "0.8"

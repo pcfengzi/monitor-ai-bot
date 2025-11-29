@@ -1,8 +1,11 @@
-use once_cell::sync::OnceCell;
-use sqlx::{Pool, Sqlite};
-use sqlx::Row;
-use chrono::{DateTime, Utc};
+// plugins/notification-center/src/db.rs
 use std::sync::Arc;
+
+use chrono::{DateTime, Utc};
+use once_cell::sync::OnceCell;
+use sqlx::{Pool, Sqlite, Row};
+
+use crate::types::{Channel, MessageStatus};
 
 static GLOBAL_DB: OnceCell<Arc<NcDb>> = OnceCell::new();
 
@@ -11,65 +14,39 @@ pub struct NcDb {
     pool: Pool<Sqlite>,
 }
 
-// ====== 对外接口：初始化 / 获取 DB ======
+pub async fn init_db() -> Result<(), sqlx::Error> {
+    let db = get_or_init().await?;
+    db.init_schema().await
+}
 
-pub async fn init_db() -> Arc<NcDb> {
+pub async fn get_or_init() -> Result<Arc<NcDb>, sqlx::Error> {
     if let Some(db) = GLOBAL_DB.get() {
-        return db.clone();
+        return Ok(db.clone());
     }
 
     let url = std::env::var("MONITOR_AI_DB_URL")
         .unwrap_or_else(|_| "sqlite://database/monitor_ai.db".to_string());
 
-    let pool = Pool::<Sqlite>::connect(&url)
-        .await
-        .expect("[notification-center] connect db failed");
-
+    let pool = Pool::<Sqlite>::connect(&url).await?;
     let db = Arc::new(NcDb { pool });
-    db.init_schema().await.expect("[notification-center] init_schema failed");
 
     GLOBAL_DB.set(db.clone()).ok();
 
-    db
+    Ok(db)
 }
 
-pub fn get_db() -> Arc<NcDb> {
-    GLOBAL_DB.get().expect("NcDb not initialized").clone()
+pub fn db() -> Arc<NcDb> {
+    GLOBAL_DB
+        .get()
+        .expect("NcDb not initialized")
+        .clone()
 }
 
-// ====== Schema & 结构体 ======
-
-#[derive(Debug, Clone)]
-pub struct NotificationTemplate {
-    pub id: i64,
-    pub scene: String,
-    pub channel: String,
-    pub lang: String,
-    pub version: i64,
-    pub content: String,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub struct NotificationHistory {
-    pub msg_id: String,
-    pub user_id: String,
-    pub scene: String,
-    pub channel: String,
-    pub content: String,
-    pub status: String,
-    pub trace_id: String,
-    pub error: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub sent_at: Option<DateTime<Utc>>,
-    pub delivered_at: Option<DateTime<Utc>>,
-}
+// ======== schema 初始化 ========
 
 impl NcDb {
     async fn init_schema(&self) -> Result<(), sqlx::Error> {
-        // 只管自己两张表，不动系统原有表
+        // 模板
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS notification_templates (
@@ -88,6 +65,7 @@ impl NcDb {
         .execute(&self.pool)
         .await?;
 
+        // 发送记录
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS notification_history (
@@ -100,9 +78,28 @@ impl NcDb {
                 status       TEXT NOT NULL,
                 trace_id     TEXT NOT NULL,
                 error        TEXT,
+                retries      INTEGER NOT NULL DEFAULT 0,
                 created_at   TEXT NOT NULL,
+                waiting_at   TEXT,
+                processing_at TEXT,
                 sent_at      TEXT,
-                delivered_at TEXT
+                delivered_at TEXT,
+                failed_at    TEXT
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // 用户偏好（简单版本）
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS notification_user_pref (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      TEXT NOT NULL,
+                channel      TEXT NOT NULL,
+                enabled      INTEGER NOT NULL,
+                updated_at   TEXT NOT NULL
             );
             "#,
         )
@@ -111,111 +108,132 @@ impl NcDb {
 
         Ok(())
     }
+}
 
-    // ===== 模板相关 =====
+// ======== 发送记录操作（状态机） ========
 
-    pub async fn insert_template(
+#[derive(Debug, Clone)]
+pub struct HistoryRecord {
+    pub msg_id: String,
+    pub user_id: String,
+    pub scene: String,
+    pub channel: String,
+    pub content: String,
+    pub status: MessageStatus,
+    pub trace_id: String,
+    pub error: Option<String>,
+    pub retries: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+impl NcDb {
+    pub async fn insert_waiting(
         &self,
+        msg_id: &str,
+        user_id: &str,
         scene: &str,
-        channel: &str,
-        lang: &str,
-        version: i64,
-        content: &str,
-        is_active: bool,
+        trace_id: &str,
+        created_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        let ts = created_at.to_rfc3339();
+
+        sqlx::query(
+            r#"
+            INSERT INTO notification_history
+                (msg_id, user_id, scene, channel, content, status, trace_id,
+                 retries, created_at, waiting_at)
+            VALUES (?1, ?2, ?3, '', '', 'waiting', ?4, 0, ?5, ?5)
+            "#,
+        )
+        .bind(msg_id)
+        .bind(user_id)
+        .bind(scene)
+        .bind(trace_id)
+        .bind(ts)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn update_status_processing(
+        &self,
+        msg_id: &str,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             r#"
-            INSERT INTO notification_templates
-                (scene, channel, lang, version, content, is_active, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            UPDATE notification_history
+            SET status = 'processing',
+                processing_at = ?1
+            WHERE msg_id = ?2
             "#,
         )
-        .bind(scene)
-        .bind(channel)
-        .bind(lang)
-        .bind(version)
-        .bind(content)
-        .bind(if is_active { 1 } else { 0 })
-        .bind(&now)
-        .bind(&now)
+        .bind(now)
+        .bind(msg_id)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    pub async fn list_templates(&self) -> Result<Vec<NotificationTemplate>, sqlx::Error> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, scene, channel, lang, version, content, is_active, created_at, updated_at
-            FROM notification_templates
-            ORDER BY scene, channel, version DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+    pub async fn update_status_final(
+        &self,
+        msg_id: &str,
+        status: MessageStatus,
+        channel: &Channel,
+        content: &str,
+        error: Option<String>,
+        retries: i32,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let status_str = status.as_str();
 
-        let mut result = Vec::new();
-        for row in rows {
-            let created_at: String = row.try_get("created_at")?;
-            let updated_at: String = row.try_get("updated_at")?;
-            result.push(NotificationTemplate {
-                id: row.try_get("id")?,
-                scene: row.try_get("scene")?,
-                channel: row.try_get("channel")?,
-                lang: row.try_get("lang")?,
-                version: row.try_get("version")?,
-                content: row.try_get("content")?,
-                is_active: row.try_get::<i64, _>("is_active")? == 1,
-                created_at: DateTime::parse_from_rfc3339(&created_at)
-                    .unwrap()
-                    .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                    .unwrap()
-                    .with_timezone(&Utc),
-            });
-        }
-        Ok(result)
-    }
+        // 不同状态更新不同时间字段
+        let (sent_at, delivered_at, failed_at) = match status {
+            MessageStatus::Sent => (Some(now.clone()), None, None),
+            MessageStatus::Delivered => (None, Some(now.clone()), None),
+            MessageStatus::Failed => (None, None, Some(now.clone())),
+            MessageStatus::Blocked => (None, None, None),
+            _ => (None, None, None),
+        };
 
-    // （后面你可以加 get_active_template / 按 scene+channel+lang 查询的函数）
-
-    // ===== 发送记录相关 =====
-
-    pub async fn insert_history(&self, h: &NotificationHistory) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
-            INSERT INTO notification_history
-                (msg_id, user_id, scene, channel, content, status, trace_id, error,
-                 created_at, sent_at, delivered_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            UPDATE notification_history
+            SET status = ?1,
+                channel = ?2,
+                content = ?3,
+                error = ?4,
+                retries = ?5,
+                sent_at = COALESCE(sent_at, ?6),
+                delivered_at = COALESCE(delivered_at, ?7),
+                failed_at = COALESCE(failed_at, ?8)
+            WHERE msg_id = ?9
             "#,
         )
-        .bind(&h.msg_id)
-        .bind(&h.user_id)
-        .bind(&h.scene)
-        .bind(&h.channel)
-        .bind(&h.content)
-        .bind(&h.status)
-        .bind(&h.trace_id)
-        .bind(&h.error)
-        .bind(h.created_at.to_rfc3339())
-        .bind(h.sent_at.as_ref().map(|d| d.to_rfc3339()))
-        .bind(h.delivered_at.as_ref().map(|d| d.to_rfc3339()))
+        .bind(status_str)
+        .bind(channel.as_str())
+        .bind(content)
+        .bind(error)
+        .bind(retries)
+        .bind(sent_at)
+        .bind(delivered_at)
+        .bind(failed_at)
+        .bind(msg_id)
         .execute(&self.pool)
         .await?;
+
         Ok(())
     }
 
     pub async fn get_history(
         &self,
         msg_id: &str,
-    ) -> Result<Option<NotificationHistory>, sqlx::Error> {
-        let row_opt = sqlx::query(
+    ) -> Result<Option<HistoryRecord>, sqlx::Error> {
+        let row = sqlx::query(
             r#"
             SELECT msg_id, user_id, scene, channel, content,
-                   status, trace_id, error,
-                   created_at, sent_at, delivered_at
+                   status, trace_id, error, retries, created_at
             FROM notification_history
             WHERE msg_id = ?1
             "#,
@@ -224,30 +242,84 @@ impl NcDb {
         .fetch_optional(&self.pool)
         .await?;
 
-        let Some(row) = row_opt else {
+        let Some(r) = row else {
             return Ok(None);
         };
 
-        let created_at: String = row.try_get("created_at")?;
-        let sent_at: Option<String> = row.try_get("sent_at")?;
-        let delivered_at: Option<String> = row.try_get("delivered_at")?;
+        let created_at: String = r.try_get("created_at")?;
+        let status: String = r.try_get("status")?;
 
-        Ok(Some(NotificationHistory {
-            msg_id: row.try_get("msg_id")?,
-            user_id: row.try_get("user_id")?,
-            scene: row.try_get("scene")?,
-            channel: row.try_get("channel")?,
-            content: row.try_get("content")?,
-            status: row.try_get("status")?,
-            trace_id: row.try_get("trace_id")?,
-            error: row.try_get("error")?,
+        Ok(Some(HistoryRecord {
+            msg_id: r.try_get("msg_id")?,
+            user_id: r.try_get("user_id")?,
+            scene: r.try_get("scene")?,
+            channel: r.try_get("channel")?,
+            content: r.try_get("content")?,
+            status: match status.as_str() {
+                "waiting" => MessageStatus::Waiting,
+                "processing" => MessageStatus::Processing,
+                "sent" => MessageStatus::Sent,
+                "delivered" => MessageStatus::Delivered,
+                "failed" => MessageStatus::Failed,
+                "blocked" => MessageStatus::Blocked,
+                _ => MessageStatus::Failed,
+            },
+            trace_id: r.try_get("trace_id")?,
+            error: r.try_get("error")?,
+            retries: r.try_get("retries")?,
             created_at: DateTime::parse_from_rfc3339(&created_at)
                 .unwrap()
                 .with_timezone(&Utc),
-            sent_at: sent_at
-                .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
-            delivered_at: delivered_at
-                .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
         }))
+    }
+
+    // 简单模板获取（你可以后面再做管理 API）
+    pub async fn get_template(
+        &self,
+        scene: &str,
+        channel: &Channel,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row = sqlx::query(
+            r#"
+            SELECT content
+            FROM notification_templates
+            WHERE scene = ?1 AND channel = ?2 AND is_active = 1
+            ORDER BY version DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(scene)
+        .bind(channel.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| r.get::<String, _>("content")))
+    }
+
+    // 用户偏好：是否允许某渠道
+    pub async fn is_channel_enabled(
+        &self,
+        user_id: &str,
+        channel: &Channel,
+    ) -> Result<bool, sqlx::Error> {
+        let row = sqlx::query(
+            r#"
+            SELECT enabled
+            FROM notification_user_pref
+            WHERE user_id = ?1 AND channel = ?2
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(user_id)
+        .bind(channel.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let enabled = row
+            .map(|r| r.get::<i64, _>("enabled") == 1)
+            .unwrap_or(true); // 默认允许
+
+        Ok(enabled)
     }
 }
