@@ -342,7 +342,9 @@ async fn run_plugins_once(
                 *slot.borrow_mut() = None;
             });
         }
-        // lib 自动 drop
+        // ⭐ 关键：不要在这里让 lib 被 drop（否则起后台 HTTP 线程的插件会崩）
+        //    对于已经成功执行过 run_with_ctx / run 的插件，我们让它常驻内存
+        std::mem::forget(lib);
     }
 }
 
