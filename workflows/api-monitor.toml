@@ -1,39 +1,63 @@
 [[workflows]]
-name = "login_and_get_profile"
+name = "s2c_login"
 enabled = true
-base_url = "https://api.example.com"
+interval_secs = 60          # 每 60 秒探测一次
+base_url = "https://apipro.siyous.com"
 
   [[workflows.steps]]
   id = "login"
   method = "POST"
-  path = "/auth/login"
-  body = '{"username": "{{USER}}", "password": "{{PASS}}"}'
+  path = "/s2c/login_user"
 
-  # 请求头可以用变量，例如 token 之类
+  body = '{"username": "{{USER}}", "password": "{{PASS}}", "grant_type": "password"}'
+
   [workflows.steps.headers]
   Content-Type = "application/json"
 
-  # 从登录响应中提取 token
   [workflows.steps.extract]
-  token = "data.token"
+  token   = "access_token"
+  user_id = "user.id"
 
-
+  # 断言 1：HTTP 状态码 == 200
   [[workflows.steps.asserts]]
   status = 200
+
+  # 断言 2：业务 code == "200"（注意要加引号）
+  [[workflows.steps.asserts]]
+  json_path = "code"
+  equals = "200"
+
+  # 断言 3：邮箱匹配（可选）
+  [[workflows.steps.asserts]]
+  json_path = "user.email"
+  equals = "{{USER}}"
+
+  # 断言 4：user.id 匹配（可选）
+  [[workflows.steps.asserts]]
+  json_path = "user.id"
+  equals = "{{EXPECTED_USER_ID}}"
+
+
+[[workflows]]
+name = "s2c_get_user"
+enabled = true
+interval_secs = 120        # 每 2 分钟探测一次
+base_url = "https://apipro.siyous.com"
 
   [[workflows.steps]]
-  id = "get_profile"
-  method = "GET"
-  path = "/user/profile"
-  body = ""
+  id = "get_user"
+  method = "POST"
+  path = "/s2c/get_user_info"
+
+  body = '{"token":"{{token}}"}'   # 如果需要 token，可以用上一个登录 workflow 的 extract
 
   [workflows.steps.headers]
-  Authorization = "Bearer {{token}}"
-
-  # 没有要提取的字段，也要给个空表，避免 "missing field `extract`"
-  [workflows.steps.extract]
+  Content-Type = "application/json"
 
   [[workflows.steps.asserts]]
   status = 200
-  json_path = "data.user.id"
-  equals = "{{EXPECTED_USER_ID}}"
+
+  [[workflows.steps.asserts]]
+  json_path = "code"
+  equals = "200"
+
