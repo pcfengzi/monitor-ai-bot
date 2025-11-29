@@ -26,6 +26,8 @@ Desktop.ini
 !/plugins/api-monitor/
 !/plugins/cpu-monitor/
 !/plugins/agent-aggregator/
+!/plugins/notification-center/
+
 
 
 # 数据库文件

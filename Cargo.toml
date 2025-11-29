@@ -8,7 +8,7 @@ members = [
     "api-server",
     "plugins/ai-analyzer", 
     "workflow-core",
-    "plugins/api-monitor", "clients/agent-probe", "plugins/agent-aggregator",
+    "plugins/api-monitor", "clients/agent-probe", "plugins/agent-aggregator", "plugins/notification-center",
 ]
 
 # 适配 edition 2024，顺便把刚才那个 warning 消掉
