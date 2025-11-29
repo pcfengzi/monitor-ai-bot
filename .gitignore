@@ -30,6 +30,9 @@ Desktop.ini
 
 
 
+# Ignore environment variable files
+*.env
+
 # 数据库文件
 /database/*.db
 /database/*.db-*
