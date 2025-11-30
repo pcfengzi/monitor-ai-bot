@@ -1,0 +1,53 @@
+// workflows/login_and_get_profile.json
+{
+  "key": "login_and_get_profile",
+  "engine": "local_json",
+  "graph": {
+    "nodes": [
+      { "id": "start", "type": "start" },
+      {
+        "id": "login",
+        "type": "http",
+        "properties": {
+          "method": "POST",
+          "url": "https://api.example.com/auth/login",
+          "body": "{\"username\":\"{{USER}}\",\"password\":\"{{PASS}}\"}",
+          "headers": { "Content-Type": "application/json" }
+        }
+      },
+      {
+        "id": "extract_token",
+        "type": "extract",
+        "properties": {
+          "path": "data.token",
+          "var": "token"
+        }
+      },
+      {
+        "id": "get_profile",
+        "type": "http",
+        "properties": {
+          "method": "GET",
+          "url": "https://api.example.com/user/profile",
+          "headers": {
+            "Authorization": "Bearer {{token}}"
+          }
+        }
+      },
+      {
+        "id": "assert_user",
+        "type": "assert",
+        "properties": {
+          "path": "data.user.id",
+          "equals": "{{EXPECTED_USER_ID}}"
+        }
+      }
+    ],
+    "edges": [
+      { "id": "e1", "source": "start", "target": "login" },
+      { "id": "e2", "source": "login", "target": "extract_token" },
+      { "id": "e3", "source": "extract_token", "target": "get_profile" },
+      { "id": "e4", "source": "get_profile", "target": "assert_user" }
+    ]
+  }
+}
