@@ -37,7 +37,7 @@ dotenvy = "0.15"
 thiserror = "1.0"
 ```
 
-> 注意：这里只有 `sqlx::query` / `query_as`，**不使用 `query!` 宏**，所以不会再遇到 “set DATABASE_URL ...” 那个错误。
+> 注意：这里只有 `sqlx::query` / `query_as`，**不使用 `query!` 宏**，所以不会再遇到 “set MONITOR_AI_DB_URL ...” 那个错误。
 
 ---
 

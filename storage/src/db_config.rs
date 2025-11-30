@@ -16,7 +16,7 @@ impl DbConfig {
 
         let url = db_url
             .map(String::from)
-            .or_else(|| std::env::var("DATABASE_URL").ok())
+            .or_else(|| std::env::var("MONITOR_AI_DB_URL").ok())
             .unwrap_or_else(|| "sqlite://database/monitor_ai.db".to_string());
 
         DbConfig { db_type, url }

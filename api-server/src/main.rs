@@ -53,7 +53,7 @@ async fn main() {
     }
 
     let db_type = std::env::var("DB_TYPE").ok();
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://database/monitor_ai.db".into());
+    let db_url = std::env::var("MONITOR_AI_DB_URL").unwrap_or_else(|_| "sqlite://database/monitor_ai.db".into());
 
     info!("准备连接数据库: {db_url}");
     let db = Db::connect(db_type.as_deref(), Some(&db_url))
