@@ -45,10 +45,6 @@ async fn main() {
     dotenv().ok();
     init_tracing();
 
-    // let db_url = "sqlite:monitor_ai.db";
-    let db_url = std::env::var("MONITOR_AI_DB_URL")
-        .unwrap_or_else(|_| "sqlite://database/monitor_ai.db".to_string());
-
     // 不存在就创建
     if !Sqlite::database_exists(&db_url).await.unwrap_or(false) {
         Sqlite::create_database(&db_url)
@@ -56,8 +52,11 @@ async fn main() {
             .expect("创建 SQLite 数据库失败");
     }
 
+    let db_type = std::env::var("DB_TYPE").ok();
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://database/monitor_ai.db".into());
+
     info!("准备连接数据库: {db_url}");
-    let db = Db::connect(&db_url)
+    let db = Db::connect(db_type.as_deref(), Some(&db_url))
         .await
         .expect("连接数据库失败");
 

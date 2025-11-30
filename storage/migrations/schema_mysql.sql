@@ -1,0 +1,31 @@
+CREATE TABLE IF NOT EXISTS logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    time DATETIME NOT NULL,
+    level VARCHAR(32) NOT NULL,
+    plugin VARCHAR(128),
+    message TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS metrics (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    time DATETIME NOT NULL,
+    plugin VARCHAR(128) NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    value DOUBLE NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    time DATETIME NOT NULL,
+    plugin VARCHAR(128) NOT NULL,
+    metric_name VARCHAR(128) NOT NULL,
+    severity VARCHAR(32) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS plugin_apis (
+    plugin VARCHAR(128) PRIMARY KEY,
+    base_url TEXT NOT NULL,
+    updated_at DATETIME NOT NULL
+);
