@@ -7,14 +7,15 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 //
 // ================== LogicFlow Graph 模型 ==================
 //
-/// LogicFlow 中的节点结构（你在前端 LogicFlow 画布里导出的 nodes 就长这样）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogicFlowNode {
     pub id: String,
@@ -68,10 +69,44 @@ pub enum EngineKind {
 /// - graph : LogicFlow 导出的图
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowDefinition {
+    /// 流程 key（逻辑唯一标识）
     pub key: String,
+
+    /// 流程名称（一般用于展示，可等于 key）
+    #[serde(default)]
+    pub name: String,
+
+    /// 流程描述
+    #[serde(default)]
+    pub description: String,
+
+    /// 使用的引擎
     pub engine: EngineKind,
+
+    /// LogicFlow 导出的图
     pub graph: LogicFlowGraph,
 }
+
+// ⚠️ 注意：从这里开始是 impl，不要写进 struct 里面
+impl WorkflowDefinition {
+    /// 从 LogicFlow JSON 构建工作流定义
+    ///
+    /// - `key` 一般可以传文件名（不含扩展名）或你想要的流程 key
+    /// - `graph_json` 是 LogicFlow 导出的完整 JSON（包含 nodes / edges）
+    pub fn from_logicflow_json(key: &str, graph_json: Value) -> WorkflowDefinition {
+        let graph: LogicFlowGraph = serde_json::from_value(graph_json)
+            .expect("invalid LogicFlow graph json");
+
+        WorkflowDefinition {
+            key: key.to_string(),
+            name: key.to_string(),
+            description: String::new(),
+            engine: EngineKind::LocalJson,
+            graph,
+        }
+    }
+}
+
 
 /// 部署结果（对 LocalJson 来说没啥特别意义；对 Flowable/Zeebe 就是部署 ID）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +124,14 @@ pub struct StartResult {
     pub raw: Value,
     pub success: bool,
     pub error_message: Option<String>,
+
+    /// 工作流总耗时（毫秒）
+    pub duration_ms: i64,    // 这里用 i64
+
+    /// 统一输出（给插件简化使用），这里我们约定为 { summary, vars }
+    pub output: Value,
 }
+
 
 //
 // ================== 执行上下文（本地引擎用） ==================
@@ -336,11 +378,8 @@ impl WorkflowEngine for LocalJsonEngine {
             ctx.step_results.insert(node.id.clone(), step_result);
         }
 
-        // 汇总 success
-        let all_ok = ctx
-            .step_results
-            .values()
-            .all(|s| s.success);
+        // ✅ 在这里定义 all_ok，后面统一复用
+        let all_ok = ctx.step_results.values().all(|s| s.success);
 
         let wf_end = Utc::now();
         let summary = WorkflowRunSummary {
@@ -351,8 +390,17 @@ impl WorkflowEngine for LocalJsonEngine {
             steps: ctx.step_results.values().cloned().collect(),
         };
 
+        // 计算总耗时（毫秒，i64）
+        let duration_ms = (wf_end - wf_start).num_milliseconds();
+
+        // 给插件使用的统一输出（精简版）
+        let output = serde_json::json!({
+            "summary": summary,
+            "vars": ctx.vars,
+        });
+
         Ok(StartResult {
-            instance_id: uuid::Uuid::new_v4().to_string(),
+            instance_id: Uuid::new_v4().to_string(),
             engine: EngineKind::LocalJson,
             raw: serde_json::json!({
                 "summary": summary,
@@ -365,9 +413,12 @@ impl WorkflowEngine for LocalJsonEngine {
             } else {
                 Some("one or more steps failed".to_string())
             },
+            duration_ms,
+            output,
         })
     }
 }
+
 
 //
 // ================== LocalJson 辅助逻辑 ==================
@@ -447,14 +498,17 @@ async fn execute_http_node(
 
     // headers（可选）
     if let Some(h) = node.properties.get("headers").and_then(|v| v.as_object()) {
-        let mut headers_map = reqwest::header::HeaderMap::new();
+        let mut headers_map = HeaderMap::new();
         for (k, v) in h {
             if let Some(s) = v.as_str() {
                 let val = apply_vars(s, &ctx.vars);
-                headers_map.insert(
-                    k.parse().unwrap(),
-                    reqwest::header::HeaderValue::from_str(&val).unwrap(),
-                );
+
+                let header_name = HeaderName::from_bytes(k.as_bytes())
+                    .map_err(|e| anyhow!("invalid header name {}: {}", k, e))?;
+                let header_value = HeaderValue::from_str(&val)
+                    .map_err(|e| anyhow!("invalid header value for {}: {}", k, e))?;
+
+                headers_map.insert(header_name, header_value);
             }
         }
         req = req.headers(headers_map);

@@ -28,6 +28,7 @@ Desktop.ini
 !/plugins/agent-aggregator/
 !/plugins/notification-center/
 !/plugins/timer-scheduler_system_plugin/
+!/plugins/workflow-engine_system_plugin/
 
 
 
