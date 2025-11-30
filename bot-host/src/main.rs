@@ -96,10 +96,22 @@ async fn main() {
     );
 
     // 初始化数据库
+    let db_type = std::env::var("DB_TYPE").ok();
     let db_url = std::env::var("MONITOR_AI_DB_URL")
         .unwrap_or_else(|_| "sqlite://database/monitor_ai.db".to_string());
-    let db = Db::connect(&db_url).await.expect("连接数据库失败");
-    info!("已连接 SQLite 数据库: {db_url}");
+
+    info!("准备连接数据库: {db_url}");
+
+    let db = Db::connect(db_type.as_deref(), Some(&db_url))
+        .await
+        .expect("连接数据库失败");
+
+        
+    // ⭐ 新增这一行，把 Option<String> 映射为 &str
+    let db_kind = db_type.as_deref().unwrap_or("sqlite");
+
+    info!("bot-host 已连接 {db_kind} 数据库: {db_url}");
+
 
     // 初始化全局 sender + 异步存储任务
     let (tx, mut rx) = mpsc::unbounded_channel::<StorageMsg>();

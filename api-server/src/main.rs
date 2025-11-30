@@ -45,13 +45,6 @@ async fn main() {
     dotenv().ok();
     init_tracing();
 
-    // 不存在就创建
-    if !Sqlite::database_exists(&db_url).await.unwrap_or(false) {
-        Sqlite::create_database(&db_url)
-            .await
-            .expect("创建 SQLite 数据库失败");
-    }
-
     let db_type = std::env::var("DB_TYPE").ok();
     let db_url = std::env::var("MONITOR_AI_DB_URL").unwrap_or_else(|_| "sqlite://database/monitor_ai.db".into());
 

@@ -1,333 +1,539 @@
+// plugins/workflow-engine/src/lib.rs
 use std::{
-    ffi::{CStr, CString},
-    fs,
+    ffi::CString,
     os::raw::c_char,
-    path::Path,
-    sync::OnceLock,
+    sync::Arc,
+    thread,
 };
 
 use axum::{
-    extract::{Path as AxumPath, State},
-    http::StatusCode,
+    extract::{Path, State},
     routing::{get, post},
     Json, Router,
 };
-use plugin_api::{
-    LogLevel, MetricSample, PluginApiInfo, PluginContext, PluginMeta,
-};
+use chrono::{DateTime, Utc};
+use dotenvy::dotenv;
+use plugin_api::{PluginApiInfo, PluginContext, PluginMeta};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tokio::sync::RwLock;
+use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
+use tokio::runtime::Runtime;
 use tracing::{error, info};
-use workflow_core::{EngineKind, WorkflowDefinition, WorkflowEngineRunner};
-use tokio::net::TcpListener;
+use std::net::SocketAddr;
 
+const PLUGIN_NAME: &str = "workflow-engine";
+const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_KIND: &str = "workflow";
+const API_PORT: u16 = 5601;
+const API_PREFIX: &str = "/workflow";
 
-/// 插件元信息常量
-static NAME: &[u8] = b"workflow-engine_system_plugin\0";
-static VERSION: &[u8] = b"0.1.0\0";
-static KIND: &[u8] = b"workflow\0";
-static API_PREFIX: &[u8] = b"/\0"; // 由 api-server 负责加 /plugin-api/workflow-engine_system_plugin 前缀
-
-/// 只启动一次 HTTP server
-static SERVER_STARTED: OnceLock<()> = OnceLock::new();
-
-/// 插件内部共享状态
-#[derive(Clone)]
-struct AppState {
-    /// 所有加载到内存的工作流定义
-    workflows: std::sync::Arc<RwLock<Vec<WorkflowDefinition>>>,
-    /// 当前选用的执行引擎（LocalJson / Flowable / Zeebe）
-    engine_kind: EngineKind,
+fn cstr(s: &str) -> *const c_char {
+    CString::new(s).unwrap().into_raw()
 }
 
-/// 列出工作流时的精简信息
-#[derive(Serialize)]
-struct WorkflowSummary {
-    pub key: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub engine: String,
-}
-
-/// POST /workflows/:key/run 的请求体
-#[derive(Deserialize)]
-struct RunWorkflowRequest {
-    /// 传入给工作流的输入变量（例如 { "USER": "...", "PASS": "..." }）
-    pub input: Option<Value>,
-}
-
-/// 执行结果的返回体
-#[derive(Serialize)]
-struct RunWorkflowResponse {
-    pub success: bool,
-    pub duration_ms: i64,
-    pub output: Value,
-}
-
-/// ====== 插件必需导出的 ABI ======
+// ====== Plugin ABI ======
 
 #[unsafe(no_mangle)]
 pub extern "C" fn meta() -> PluginMeta {
     PluginMeta {
-        name: NAME.as_ptr() as *const c_char,
-        version: VERSION.as_ptr() as *const c_char,
-        kind: KIND.as_ptr() as *const c_char,
+        name: cstr(PLUGIN_NAME),
+        version: cstr(PLUGIN_VERSION),
+        kind: cstr(PLUGIN_KIND),
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn plugin_api_info() -> PluginApiInfo {
     PluginApiInfo {
-        // 约定 workflow-engine_system_plugin 插件监听 5601 端口，如有需要可以改成从 env 读取
-        port: 5601,
-        prefix: API_PREFIX.as_ptr() as *const c_char,
+        port: API_PORT,
+        prefix: cstr(API_PREFIX),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn run_with_ctx(ctx: *mut PluginContext) {
-    if ctx.is_null() {
-        return;
-    }
-    let ctx = unsafe { &mut *ctx };
-
-    // 简单日志函数：通过 host 的 log_fn 上报
-    log_info(ctx, "[workflow-engine_system_plugin] run_with_ctx called");
-
-    // 确保 HTTP server 只启动一次
-    if SERVER_STARTED.set(()).is_err() {
-        log_info(ctx, "[workflow-engine_system_plugin] server already started, skip");
-        return;
-    }
-
-    // 1. 加载 workflows 目录下的 LogicFlow JSON
-    let defs = load_workflows_from_dir("workflows");
-    log_info(
-        ctx,
-        &format!(
-            "[workflow-engine_system_plugin] loaded {} workflow definition(s) from ./workflows",
-            defs.len()
-        ),
-    );
-
-    // 2. 根据环境变量选择引擎类型
-    let engine_kind = match std::env::var("WORKFLOW_ENGINE")
-        .unwrap_or_else(|_| "local_json".to_string())
-        .as_str()
-    {
-        "flowable" => EngineKind::Flowable,
-        "zeebe" => EngineKind::Zeebe,
-        _ => EngineKind::LocalJson,
-    };
-
-    log_info(
-        ctx,
-        &format!("[workflow-engine_system_plugin] engine kind = {:?}", engine_kind),
-    );
-
-    let state = AppState {
-        workflows: std::sync::Arc::new(RwLock::new(defs)),
-        engine_kind,
-    };
-
-    // 3. 启动 HTTP 服务（Axum）
-    //    不要把 ctx 指针 move 进异步任务，只在这里用 log 即可
-    tokio::spawn(async move {
-        let app = Router::new()
-            .route("/health", get(health_check))
-            .route("/workflows", get(list_workflows))
-            .route("/workflows/:key/run", post(run_workflow_once))
-            .with_state(state);
-
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 5601));
-        info!("[workflow-engine_system_plugin] listening on http://{}", addr);
-
-        // ✅ axum 0.7 写法：先用 TcpListener 绑定端口
-        let listener = TcpListener::bind(addr)
-            .await
-            .expect("[workflow-engine_system_plugin] failed to bind TCP listener");
-
-        // ✅ 然后用 axum::serve(listener, app)
-        if let Err(e) = axum::serve(listener, app).await {
-            error!("[workflow-engine_system_plugin] HTTP server error: {e}");
-        }
+pub extern "C" fn run_with_ctx(_ctx: *mut PluginContext) {
+    // 插件里自己起一个线程 + tokio runtime，跑 HTTP 服务
+    thread::spawn(|| {
+        dotenv().ok();
+        let rt = Runtime::new().expect("创建 tokio runtime 失败");
+        rt.block_on(async {
+            if let Err(e) = start_server().await {
+                eprintln!("[workflow-engine] server error: {e:?}");
+            }
+        });
     });
-    // 4. 上报一条“启动成功”的 Metric（可选）
-    emit_heartbeat_metric(ctx);
+
+    // 注意：这里不要阻塞，host 会周期性调用插件
 }
 
-/// ====== HTTP Handlers ======
+// ====== 内部状态 & DB 结构 ======
 
-async fn health_check() -> &'static str {
+#[derive(Clone)]
+struct AppState {
+    pool: Pool<Sqlite>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowDefinitionRow {
+    id: i64,
+    name: String,
+    description: Option<String>,
+    lf_json: serde_json::Value,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowInstanceRow {
+    id: i64,
+    workflow_id: i64,
+    status: String,
+    steps: serde_json::Value,
+    started_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveDefinitionRequest {
+    pub id: Option<i64>,
+    pub name: String,
+    pub description: Option<String>,
+    pub lf_json: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct SaveDefinitionResponse {
+    pub id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunRequest {
+    pub workflow_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct RunResponse {
+    pub instance_id: i64,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AiGenerateRequest {
+    pub prompt: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AiGenerateResponse {
+    pub lf_json: serde_json::Value,
+}
+
+// ====== 启动 HTTP 服务 ======
+
+async fn start_server() -> Result<(), sqlx::Error> {
+    init_tracing();
+
+    let db_url = std::env::var("MONITOR_AI_DB_URL")
+        .unwrap_or_else(|_| "sqlite://database/monitor_ai.db".to_string());
+
+    info!("[workflow-engine] 使用数据库: {db_url}");
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await?;
+
+    init_schema(&pool).await?;
+
+    let state = AppState { pool };
+
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/definitions", get(list_definitions).post(save_definition))
+        .route("/definitions/:id", get(get_definition))
+        .route("/run", post(run_workflow))
+        .route("/instances/:id", get(get_instance))
+        .route("/ai-generate", post(ai_generate))
+        .with_state(Arc::new(state));
+
+    let addr: SocketAddr = format!("127.0.0.1:{API_PORT}").parse().expect("invalid API_PORT or bind address");
+    info!("[workflow-engine] HTTP server 启动于 http://{addr}{API_PREFIX}");
+
+    let listener = tokio::net::TcpListener::bind(addr)
+    .await
+    .map_err(|e| {
+        error!("[workflow-engine] bind error: {e}");
+        sqlx::Error::Protocol(e.to_string().into())
+    })?;
+
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| {
+            error!("[workflow-engine] server error: {e}");
+            sqlx::Error::Protocol(e.to_string().into())
+        })
+}
+
+// ====== tracing ======
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into());
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+}
+
+// ====== DB schema ======
+
+async fn init_schema(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    // 存储 LogicFlow JSON
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS workflow_definitions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL,
+            description TEXT,
+            lf_json     TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+    "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // 存执行实例 + 步骤状态
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS workflow_instances (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id INTEGER NOT NULL,
+            status      TEXT NOT NULL,
+            steps       TEXT NOT NULL,
+            started_at  TEXT NOT NULL,
+            finished_at TEXT,
+            error       TEXT
+        );
+    "#,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+// ====== Handlers ======
+
+async fn health() -> &'static str {
     "OK"
 }
 
-async fn list_workflows(
-    State(state): State<AppState>,
-) -> Json<Vec<WorkflowSummary>> {
-    let defs = state.workflows.read().await;
+// GET /definitions
+async fn list_definitions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<WorkflowDefinitionRow>>, String> {
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, String, String, String)>(
+        r#"
+        SELECT id, name, description, lf_json, created_at, updated_at
+        FROM workflow_definitions
+        ORDER BY id DESC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
-    let engine_str = match state.engine_kind {
-        EngineKind::LocalJson => "local_json",
-        EngineKind::Flowable => "flowable",
-        EngineKind::Zeebe => "zeebe",
-    }
-    .to_string();
-
-    let list = defs
-        .iter()
-        .map(|def| WorkflowSummary {
-            key: def.key.clone(),
-            name: def.name.clone(),
-            description: Some(def.description.clone()),
-            engine: engine_str.clone(),
+    let defs = rows
+        .into_iter()
+        .filter_map(|(id, name, description, lf_json, created_at, updated_at)| {
+            let lf_json_val: serde_json::Value = serde_json::from_str(&lf_json).ok()?;
+            let created_at_dt = created_at.parse().ok()?;
+            let updated_at_dt = updated_at.parse().ok()?;
+            Some(WorkflowDefinitionRow {
+                id,
+                name,
+                description,
+                lf_json: lf_json_val,
+                created_at: created_at_dt,
+                updated_at: updated_at_dt,
+            })
         })
         .collect();
 
-    Json(list)
+    Ok(Json(defs))
 }
 
-async fn run_workflow_once(
-    State(state): State<AppState>,
-    AxumPath(key): AxumPath<String>,
-    Json(payload): Json<RunWorkflowRequest>,
-) -> Result<Json<RunWorkflowResponse>, StatusCode> {
-    // 1. 找到对应的 WorkflowDefinition
-    let defs = state.workflows.read().await;
-    let def = defs
-        .iter()
-        .find(|d| d.key == key)
-        .ok_or(StatusCode::NOT_FOUND)?;
+// GET /definitions/:id
+async fn get_definition(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<WorkflowDefinitionRow>, String> {
+    let row = sqlx::query_as::<_, (i64, String, Option<String>, String, String, String)>(
+        r#"
+        SELECT id, name, description, lf_json, created_at, updated_at
+        FROM workflow_definitions
+        WHERE id = ?
+        "#,
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
-    // 2. 构造执行器
-    let runner = WorkflowEngineRunner::new(state.engine_kind);
+    let lf_json_val: serde_json::Value =
+        serde_json::from_str(&row.3).map_err(|e| e.to_string())?;
+    
+    let created_at_dt: DateTime<Utc> = row
+        .4
+        .parse::<DateTime<Utc>>()            // 显式告诉 parse 要转成 DateTime<Utc>
+        .map_err(|e: chrono::ParseError| e.to_string())?;
+    let updated_at_dt: DateTime<Utc> = row
+        .5
+        .parse::<DateTime<Utc>>()
+        .map_err(|e| e.to_string())?;
 
-    let input = payload.input.unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    Ok(Json(WorkflowDefinitionRow {
+        id: row.0,
+        name: row.1,
+        description: row.2,
+        lf_json: lf_json_val,
+        created_at: created_at_dt,
+        updated_at: updated_at_dt,
+    }))
+}
 
-    // 3. 执行一次
-    let result = runner
-        .run_once(def, input)
+// POST /definitions
+async fn save_definition(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SaveDefinitionRequest>,
+) -> Result<Json<SaveDefinitionResponse>, String> {
+    let now = Utc::now().to_rfc3339();
+    let lf_str = serde_json::to_string(&req.lf_json).map_err(|e| e.to_string())?;
+
+    let id = if let Some(id) = req.id {
+        sqlx::query(
+            r#"
+            UPDATE workflow_definitions
+            SET name = ?, description = ?, lf_json = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&req.name)
+        .bind(&req.description)
+        .bind(&lf_str)
+        .bind(&now)
+        .bind(id)
+        .execute(&state.pool)
         .await
-        .map_err(|e| {
-            error!("[workflow-engine_system_plugin] run workflow `{}` error: {e}", key);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|e| e.to_string())?;
+        id
+    } else {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO workflow_definitions (name, description, lf_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&req.name)
+        .bind(&req.description)
+        .bind(&lf_str)
+        .bind(&now)
+        .bind(&now)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    let resp = RunWorkflowResponse {
-        success: result.success,
-        duration_ms: result.duration_ms,
-        output: result.output,
+        result.last_insert_rowid()
     };
 
-    Ok(Json(resp))
+    Ok(Json(SaveDefinitionResponse { id }))
 }
 
-/// ====== 工具函数：加载工作流定义 ======
+// POST /run
+async fn run_workflow(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RunRequest>,
+) -> Result<Json<RunResponse>, String> {
+    // 1. 取出 workflow definition
+    let row = sqlx::query_as::<_, (i64, String, Option<String>, String, String, String)>(
+        r#"
+        SELECT id, name, description, lf_json, created_at, updated_at
+        FROM workflow_definitions
+        WHERE id = ?
+        "#,
+    )
+    .bind(req.workflow_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
-fn load_workflows_from_dir(dir: &str) -> Vec<WorkflowDefinition> {
-    let mut result = Vec::new();
-    let path = Path::new(dir);
+    let lf_json_val: serde_json::Value =
+        serde_json::from_str(&row.3).map_err(|e| e.to_string())?;
 
-    let entries = match fs::read_dir(path) {
-        Ok(rd) => rd,
-        Err(e) => {
-            eprintln!(
-                "[workflow-engine_system_plugin] cannot read workflows dir {}: {e}",
-                path.display()
-            );
-            return result;
-        }
+    // 2. 简单解析节点列表，模拟执行
+    let mut steps_vec = Vec::<serde_json::Value>::new();
+    let nodes = lf_json_val
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let started_at = Utc::now();
+    let last_error: Option<String> = None;
+
+    for node in nodes {
+        let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        // 简单模拟：全部当成功
+        let step_obj = serde_json::json!({
+            "node_id": node_id,
+            "node_type": node_type,
+            "status": "success",
+            "message": "executed"
+        });
+        steps_vec.push(step_obj);
+    }
+
+    let steps_json = serde_json::Value::Array(steps_vec);
+    let steps_str =
+        serde_json::to_string(&steps_json).map_err(|e| e.to_string())?;
+
+    let status = if last_error.is_some() {
+        "failed"
+    } else {
+        "success"
     };
 
-    for entry in entries {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let file_path = entry.path();
-        if !file_path.is_file() {
-            continue;
+    // 3. 写入 workflow_instances
+    let started_at_str = started_at.to_rfc3339();
+    let finished_at_str = Utc::now().to_rfc3339();
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO workflow_instances
+            (workflow_id, status, steps, started_at, finished_at, error)
+        VALUES (?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(req.workflow_id)
+    .bind(status)
+    .bind(&steps_str)
+    .bind(&started_at_str)
+    .bind(&finished_at_str)
+    .bind(&last_error)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let instance_id = result.last_insert_rowid();
+
+    Ok(Json(RunResponse {
+        instance_id,
+        status: status.to_string(),
+    }))
+}
+
+// GET /instances/:id
+async fn get_instance(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<WorkflowInstanceRow>, String> {
+    let row = sqlx::query_as::<_, (i64, i64, String, String, String, Option<String>, Option<String>)>(
+        r#"
+        SELECT id, workflow_id, status, steps, started_at, finished_at, error
+        FROM workflow_instances
+        WHERE id = ?
+        "#,
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let steps_val: serde_json::Value =
+        serde_json::from_str(&row.3).map_err(|e| e.to_string())?;
+    let started_at = row
+        .4
+        .parse::<DateTime<Utc>>()
+        .map_err(|e| e.to_string())?;
+    let finished_at: Option<DateTime<Utc>> = match row.5 {
+        Some(s) => {
+            let dt = s
+                .parse::<DateTime<Utc>>()       // 显式解析类型
+                .map_err(|e| e.to_string())?;
+            Some(dt)
         }
+        None => None,
+    };
 
-        // 只处理 .json
-        let is_json = file_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.eq_ignore_ascii_case("json"))
-            .unwrap_or(false);
-        if !is_json {
-            continue;
-        }
 
-        let file_name = file_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+    Ok(Json(WorkflowInstanceRow {
+        id: row.0,
+        workflow_id: row.1,
+        status: row.2,
+        steps: steps_val,
+        started_at,
+        finished_at,
+        error: row.6,
+    }))
+}
 
-        match fs::read_to_string(&file_path) {
-            Ok(content) => match serde_json::from_str::<Value>(&content) {
-                Ok(json) => {
-                    // 约定：workflow-core 提供 from_logicflow_json 构造器
-                    let def = WorkflowDefinition::from_logicflow_json(&file_name, json);
-                    result.push(def);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[workflow-engine_system_plugin] invalid JSON in {}: {e}",
-                        file_path.display()
-                    );
+// POST /ai-generate
+async fn ai_generate(
+    Json(req): Json<AiGenerateRequest>,
+) -> Result<Json<AiGenerateResponse>, String> {
+    // 先做一个非常简单的“规则引擎版”，以后再换成真 AI
+    // 根据 prompt 拼一个 Start -> API -> End 三个节点的 LogicFlow JSON
+    // 你可以在这里接 GPT / DeepSeek：解析 prompt -> 构造节点数组
+
+    let title = if req.prompt.trim().is_empty() {
+        "新工作流"
+    } else {
+        req.prompt.trim()
+    };
+
+    let lf_json = serde_json::json!({
+        "nodes": [
+            {
+                "id": "start_1",
+                "type": "start-node",
+                "x": 80,
+                "y": 150,
+                "text": { "value": "开始" }
+            },
+            {
+                "id": "api_1",
+                "type": "api-node",
+                "x": 260,
+                "y": 150,
+                "text": { "value": format!("API 调用: {}", title) },
+                "properties": {
+                    "method": "GET",
+                    "url": "https://api.example.com/health",
+                    "timeout_ms": 3000
                 }
             },
-            Err(e) => {
-                eprintln!(
-                    "[workflow-engine_system_plugin] read file {} error: {e}",
-                    file_path.display()
-                );
+            {
+                "id": "end_1",
+                "type": "end-node",
+                "x": 440,
+                "y": 150,
+                "text": { "value": "结束" }
             }
-        }
-    }
+        ],
+        "edges": [
+            {
+                "id": "e1",
+                "type": "polyline",
+                "sourceNodeId": "start_1",
+                "targetNodeId": "api_1"
+            },
+            {
+                "id": "e2",
+                "type": "polyline",
+                "sourceNodeId": "api_1",
+                "targetNodeId": "end_1"
+            }
+        ]
+    });
 
-    result
-}
-
-/// ====== Host 日志 & Metric 工具 ======
-
-fn log_info(ctx: &PluginContext, msg: &str) {
-    let c_msg = CString::new(msg).unwrap_or_else(|_| CString::new("log error").unwrap());
-    (ctx.log_fn)(LogLevel::Info, c_msg.as_ptr());
-}
-
-fn emit_heartbeat_metric(ctx: &PluginContext) {
-    let name = CString::new("workflow_engine_heartbeat")
-        .unwrap_or_else(|_| CString::new("workflow_engine_heartbeat_fallback").unwrap());
-
-    let timestamp_ms = current_timestamp_ms();
-
-    let sample = MetricSample {
-        name: name.as_ptr(),
-        value: 1.0,
-        timestamp_ms,
-    };
-
-    unsafe {
-        (ctx.emit_metric_fn)(sample);
-    }
-}
-
-fn current_timestamp_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    now.as_millis() as i64
-}
-
-/// 如果你需要从 C 字符串转 Rust String（暂时没用到，预留）
-#[allow(dead_code)]
-fn c_str_to_string(ptr: *const c_char) -> Option<String> {
-    if ptr.is_null() {
-        return None;
-    }
-    unsafe { CStr::from_ptr(ptr).to_str().ok().map(|s| s.to_string()) }
+    Ok(Json(AiGenerateResponse { lf_json }))
 }

@@ -57,5 +57,11 @@ pub async fn create_pool(config: &DbConfig) -> sqlx::Result<AnyPool> {
         }
     }
 
-    Pool::<Any>::connect(db_url).await
+      // ⭐ 关键：为 `Any` 安装默认驱动（sqlite / postgres / mysql，只要在 Cargo.toml 里开启了）
+    sqlx::any::install_default_drivers();
+
+    // 然后再用 Any 连接
+    AnyPool::connect(db_url).await
+    // 或者等价写法：
+    // Pool::<Any>::connect(db_url).await
 }
