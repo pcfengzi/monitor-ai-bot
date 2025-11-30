@@ -45,3 +45,6 @@ Desktop.ini
 
 # Rust 编译产物
 /target/
+
+# 忽略所有 node_modules
+**/node_modules/
