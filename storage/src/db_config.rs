@@ -1,4 +1,4 @@
-use sqlx::{AnyPool, Pool, any::Any};
+use sqlx::{any::Any, migrate::MigrateDatabase, AnyPool, Pool};
 
 #[derive(Debug, Clone)]
 pub struct DbConfig {
@@ -24,5 +24,38 @@ impl DbConfig {
 }
 
 pub async fn create_pool(config: &DbConfig) -> sqlx::Result<AnyPool> {
-    Pool::<Any>::connect(&config.url).await
+    let db_url = &config.url;
+
+    // 检查数据库是否存在，不存在则创建（仅支持 SQLite）
+    match config.db_type.as_str() {
+        "sqlite" => {
+            if !sqlx::Sqlite::database_exists(db_url).await.unwrap_or(false) {
+                println!("SQLite 数据库不存在，正在创建: {}", db_url);
+                sqlx::Sqlite::create_database(db_url)
+                    .await
+                    .expect("无法创建 SQLite 数据库");
+            }
+        }
+        "postgres" => {
+            if !sqlx::Postgres::database_exists(db_url).await.unwrap_or(false) {
+                println!("PostgreSQL 数据库不存在，正在创建...");
+                sqlx::Postgres::create_database(db_url)
+                    .await
+                    .expect("无法创建 PostgreSQL 数据库");
+            }
+        }
+        "mysql" => {
+            if !sqlx::MySql::database_exists(db_url).await.unwrap_or(false) {
+                println!("MySQL 数据库不存在，正在创建...");
+                sqlx::MySql::create_database(db_url)
+                    .await
+                    .expect("无法创建 MySQL 数据库");
+            }
+        }
+        other => {
+            println!("未知数据库类型 {}，跳过创建逻辑", other);
+        }
+    }
+
+    Pool::<Any>::connect(db_url).await
 }
