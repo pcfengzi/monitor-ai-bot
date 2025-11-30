@@ -8,7 +8,7 @@ import {
   CUSTOM_NODE_TYPES,
 } from "./custom-nodes";
 
-import "@logicflow/core/dist/style/index.css";
+import "@logicflow/core/dist/index.css";
 import "@logicflow/extension/lib/style/index.css";
 
 interface Props {

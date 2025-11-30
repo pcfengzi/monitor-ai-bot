@@ -1,7 +1,7 @@
 // src/App.tsx
 import React, { useEffect, useState } from "react";
 import MetricChart, { type MetricPoint } from "./components/MetricChart";
-
+import WorkflowDesignerPage from "./pages/WorkflowManagement";
 
 type Metric = {
   time: string;
@@ -57,6 +57,16 @@ const App: React.FC = () => {
   const cpuSeries = toSeries("cpu-monitor", "cpu_usage");
   const apiFlowSuccess = toSeries("api-monitor", "api_flow_success");
   const apiFlowDuration = toSeries("api-monitor", "api_flow_duration_ms");
+
+  const path = window.location.pathname;
+  // 简单路由：访问 /workflow-designer 时显示设计器
+  if (path.startsWith("/workflow-designer")) {
+    return (
+      <div style={{ width: "100vw", height: "100vh" }}>
+        <WorkflowDesignerPage />
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif" }}>
