@@ -32,6 +32,40 @@ const WorkflowDetailPage: React.FC = () => {
     );
   }
 
+  const handleSaveLfJson = async (lfJson: any) => {
+    try {
+      // 1) 本地先更新 store
+      setCurrentLfJson(lfJson);
+
+      // 2) 调用后端更新
+      const resp = await fetch(
+        `${API_BASE}/plugin-api/workflow-engine/workflows/${current.id}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            lf_json: lfJson,
+          }),
+        },
+      );
+
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+
+      // 可选：把返回的最新 updated_at 再写回 store
+      // const data = await resp.json();
+      // ...
+
+      alert("保存成功");
+    } catch (e: any) {
+      console.error(e);
+      alert(`保存失败：${e.message || e}`);
+    }
+  };
+
   return (
     <div style={{ padding: 24 }}>
       {/* 面包屑导航 */}
@@ -142,7 +176,11 @@ const WorkflowDetailPage: React.FC = () => {
 
           <div style={{ flex: 1, background: "#fff" }}>
             {/* 这里直接复用你已有的 WorkflowDesignerPage */}
-            <WorkflowDesignerPage />
+            <WorkflowDesignerPage
+              workflowId={current.id}
+              initialData={current.lfJson}
+              onSave={handleSaveLfJson}
+            />
           </div>
         </div>
       )}

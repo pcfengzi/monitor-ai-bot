@@ -15,9 +15,16 @@ anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 axum = { version = "0.7", features = ["macros", "json"] }
-sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 dotenvy = "0.15"
 thiserror = "1.0"
+serde_with = "3"
+sqlx = { version = "0.7", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "chrono",
+    "uuid",
+] }

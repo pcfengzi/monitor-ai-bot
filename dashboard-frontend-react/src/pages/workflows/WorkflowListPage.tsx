@@ -1,17 +1,35 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWorkflowStore } from "../../store/workflowStore";
 
 const WorkflowListPage: React.FC = () => {
   const navigate = useNavigate();
-  const workflows = useWorkflowStore((s) => s.workflows);
+  const { workflows, loading, error, loadWorkflows } = useWorkflowStore(
+    (s) => ({
+      workflows: s.workflows,
+      loading: s.loading,
+      error: s.error,
+      loadWorkflows: s.loadWorkflows,
+    }),
+  );
+
+  useEffect(() => {
+    loadWorkflows();
+  }, [loadWorkflows]);
 
   return (
     <div style={{ padding: 24 }}>
       <h2 style={{ marginBottom: 16 }}>工作流列表</h2>
       <p style={{ color: "#666", marginBottom: 16 }}>
-        这里是所有可配置/可执行的工作流。后续可以绑定到 workflow-engine 插件和 LogicFlow JSON。
+        这里展示 workflow-engine 插件中存储的所有工作流定义。
       </p>
+
+      {error && (
+        <div style={{ color: "red", marginBottom: 12 }}>{error}</div>
+      )}
+      {loading && (
+        <div style={{ marginBottom: 12 }}>加载中...</div>
+      )}
 
       <table
         style={{
@@ -20,6 +38,8 @@ const WorkflowListPage: React.FC = () => {
           background: "#fff",
         }}
       >
+        {/* 表头略，与之前相同 */}
+        {/* ... */}
         <thead>
           <tr
             style={{
@@ -78,13 +98,13 @@ const WorkflowListPage: React.FC = () => {
               </td>
             </tr>
           ))}
-          {workflows.length === 0 && (
+          {workflows.length === 0 && !loading && (
             <tr>
               <td
                 colSpan={5}
                 style={{ padding: 12, textAlign: "center", color: "#6b7280" }}
               >
-                暂无工作流，后续可以从 workflow-engine 插件加载。
+                暂无工作流，可在 Designer 中创建并保存。
               </td>
             </tr>
           )}
