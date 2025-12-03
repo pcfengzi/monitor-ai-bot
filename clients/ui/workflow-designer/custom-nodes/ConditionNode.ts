@@ -125,3 +125,9 @@ export function registerConditionNode(lf: LogicFlow) {
     view: ConditionNodeView,
   });
 }
+
+export const ConditionNode = {
+  type: CONDITION_NODE_TYPE,
+  view: ConditionNodeView,
+  model: ConditionNodeModel,
+};

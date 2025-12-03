@@ -156,3 +156,12 @@ export function registerApiNode(lf: LogicFlow) {
     model: ApiNodeModel,
   });
 }
+
+/**
+ * 方式一：导出一个配置对象，供 lf.register(ApiNode) 使用
+ */
+export const ApiNode = {
+  type: API_NODE_TYPE,
+  view: ApiNodeView,
+  model: ApiNodeModel,
+};
