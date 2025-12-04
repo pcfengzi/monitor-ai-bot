@@ -6,15 +6,11 @@ import {
   NavLink,
 } from "react-router-dom";
 import DashboardHome from "./pages/DashboardHome";
-import WorkflowListPage from "./pages/workflows/WorkflowListPage";
-import WorkflowDetailPage from "./pages/workflows/WorkflowDetailPage";
-
-// “前端插件”式：按需动态加载 Workflow Designer
-const WorkflowDesignerLazy = React.lazy(
-  () => import("./pages/WorkflowManagement"),
-);
+import { getPlugins } from "./plugins/registry";
 
 const App: React.FC = () => {
+  const plugins = getPlugins();
+
   return (
     <BrowserRouter>
       <div
@@ -38,7 +34,7 @@ const App: React.FC = () => {
           }}
         >
           <div style={{ fontWeight: 700 }}>Monitor AI Bot</div>
-          <nav style={{ display: "flex", gap: 16 }}>
+          <nav style={{ display: "flex", gap: 16, alignItems: 'center' }}>
             <NavLink
               to="/"
               style={({ isActive }) => ({
@@ -51,27 +47,24 @@ const App: React.FC = () => {
               Dashboard
             </NavLink>
 
-            <NavLink
-              to="/workflows"
-              style={({ isActive }) => ({
-                textDecoration: "none",
-                color: isActive ? "#2563eb" : "#4b5563",
-                fontWeight: isActive ? 600 : 400,
-              })}
-            >
-              Workflows
-            </NavLink>
-
-            <NavLink
-              to="/workflow-designer"
-              style={({ isActive }) => ({
-                textDecoration: "none",
-                color: isActive ? "#2563eb" : "#4b5563",
-                fontWeight: isActive ? 600 : 400,
-              })}
-            >
-              Designer
-            </NavLink>
+            {/* Dynamically generate navigation from plugins */}
+            {plugins.map((plugin) => (
+              <NavLink
+                key={plugin.id}
+                to={plugin.path}
+                style={({ isActive }) => ({
+                  textDecoration: "none",
+                  color: isActive ? "#2563eb" : "#4b5563",
+                  fontWeight: isActive ? 600 : 400,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                })}
+              >
+                {plugin.icon}
+                {plugin.name}
+              </NavLink>
+            ))}
           </nav>
         </header>
 
@@ -86,32 +79,26 @@ const App: React.FC = () => {
           <Routes>
             <Route path="/" element={<DashboardHome />} />
 
-            {/* 工作流列表页 */}
-            <Route path="/workflows" element={<WorkflowListPage />} />
-
-            {/* 工作流详情页 */}
-            <Route
-              path="/workflows/:id"
-              element={<WorkflowDetailPage />}
-            />
-
-            {/* LogicFlow Designer 作为“前端插件”懒加载 */}
-            <Route
-              path="/workflow-designer"
-              element={
-                <div
-                  style={{
-                    width: "100%",
-                    height: "calc(100vh - 56px)",
-                    background: "#fff",
-                  }}
-                >
-                  <Suspense fallback={<div style={{ padding: 24 }}>加载工作流设计器...</div>}>
-                    <WorkflowDesignerLazy />
-                  </Suspense>
-                </div>
-              }
-            />
+            {/* Dynamically generate routes from plugins */}
+            {plugins.map((plugin) => (
+              <Route
+                key={plugin.id}
+                path={plugin.path}
+                element={
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "calc(100vh - 56px)",
+                      background: "#fff",
+                    }}
+                  >
+                    <Suspense fallback={<div style={{ padding: 24 }}>加载插件...</div>}>
+                      <plugin.component />
+                    </Suspense>
+                  </div>
+                }
+              />
+            ))}
           </Routes>
         </main>
       </div>

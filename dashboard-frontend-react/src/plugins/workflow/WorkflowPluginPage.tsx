@@ -1,6 +1,6 @@
-// dashboard-frontend/src/pages/WorkflowDesignerPage.tsx
+// dashboard-frontend/src/plugins/workflow/WorkflowPluginPage.tsx
 import React, { useEffect, useState } from "react";
-import { WorkflowEditor } from "../../../clients/ui/workflow-designer/WorkflowEditor";
+import { WorkflowEditor } from "../../../../clients/ui/workflow-designer/WorkflowEditor";
 
 // Only the list item type is needed here
 interface WorkflowDefinition {
@@ -11,7 +11,7 @@ interface WorkflowDefinition {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:3001";
 
-export const WorkflowDesignerPage: React.FC = () => {
+export const WorkflowPluginPage: React.FC = () => {
   const [defs, setDefs] = useState<WorkflowDefinition[]>([]);
   const [currentId, setCurrentId] = useState<number | null>(null);
 
@@ -93,4 +93,4 @@ export const WorkflowDesignerPage: React.FC = () => {
   );
 };
 
-export default WorkflowDesignerPage;
+export default WorkflowPluginPage;
