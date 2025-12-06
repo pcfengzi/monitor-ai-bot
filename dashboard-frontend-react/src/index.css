@@ -6,7 +6,7 @@
   line-height: 1.5;
   font-weight: 400;
   color: #111827;
-  background-color: #f3f4f6;
+  background-color: #f3f4f6; /* 和 App.css 的 body 背景一致 */
 }
 
 *,
@@ -23,7 +23,7 @@ body,
   height: 100%;
 }
 
-
+/* 链接默认样式（如果你觉得蓝色不搭，也可以把这一段删掉） */
 a {
   font-weight: 500;
   color: #646cff;
@@ -33,11 +33,7 @@ a:hover {
   color: #535bf2;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
+/* 按钮默认样式（以后如果都用自定义按钮组件，也可以删掉） */
 button {
   border-radius: 8px;
   border: 1px solid transparent;
@@ -57,6 +53,7 @@ button:focus-visible {
   outline: 4px auto -webkit-focus-ring-color;
 }
 
+/* 浅色模式的一些默认：如果你不走系统 theme，可以删掉这块 */
 @media (prefers-color-scheme: light) {
   :root {
     color: #213547;
