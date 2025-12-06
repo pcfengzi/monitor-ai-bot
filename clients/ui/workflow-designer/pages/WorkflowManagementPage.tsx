@@ -1,6 +1,6 @@
 // dashboard-frontend/src/pages/WorkflowDesignerPage.tsx
 import React, { useEffect, useState } from "react";
-import { WorkflowEditor } from "../../../clients/ui/workflow-designer/WorkflowEditor";
+import { WorkflowEditor } from "../WorkflowEditor";
 
 // Only the list item type is needed here
 interface WorkflowDefinition {

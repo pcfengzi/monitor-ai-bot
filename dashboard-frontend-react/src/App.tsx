@@ -6,7 +6,7 @@ import {
   NavLink,
 } from "react-router-dom";
 import DashboardHome from "./pages/DashboardHome";
-import { getPlugins } from "./plugins/registry";
+import { getPlugins } from "./plugin-registry";
 
 const App: React.FC = () => {
   const plugins = getPlugins();

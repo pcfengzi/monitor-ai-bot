@@ -1,5 +1,5 @@
 // src/plugins/registry.ts
-import type { FrontendPlugin } from './types';
+import type { FrontendPlugin } from './plugins/types';
 
 // A private array to hold all registered plugins.
 const plugins: FrontendPlugin[] = [];
