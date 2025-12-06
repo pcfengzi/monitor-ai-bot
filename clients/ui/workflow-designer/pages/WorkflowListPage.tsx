@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useWorkflowStore } from "../../store/workflowStore";
+import { useWorkflowStore } from "../store/workflowStore";
+
 
 const WorkflowListPage: React.FC = () => {
   const navigate = useNavigate();

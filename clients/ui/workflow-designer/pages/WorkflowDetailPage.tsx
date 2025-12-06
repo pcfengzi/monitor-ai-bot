@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { useWorkflowStore } from "../../store/workflowStore";
-import WorkflowDesignerPage from "../WorkflowManagement";
+import { useWorkflowStore } from "../store/workflowStore";
+import WorkflowDesignerPage from "./WorkflowManagementPage";
+
 
 const WorkflowDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
