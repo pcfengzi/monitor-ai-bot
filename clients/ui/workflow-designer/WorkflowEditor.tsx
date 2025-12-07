@@ -57,7 +57,7 @@ export const WorkflowEditor: React.FC<WorkflowEditorProps> = ({
     setCurrentId(workflowId);
     if (workflowId) {
       setLoading(true);
-      fetch(`${apiBaseUrl}/plugin-api/workflow-engine/workflow/definitions/${workflowId}`)
+      fetch(`${apiBaseUrl}/plugin-api/workflow-engine/definitions/${workflowId}`)
         .then(res => res.json())
         .then((data: WorkflowDefinition) => {
           setCurrentName(data.name);
@@ -90,7 +90,7 @@ export const WorkflowEditor: React.FC<WorkflowEditorProps> = ({
         description: currentDesc || null,
         lf_json: graph,
       };
-      const res = await fetch(`${apiBaseUrl}/plugin-api/workflow-engine/workflow/definitions`, {
+      const res = await fetch(`${apiBaseUrl}/plugin-api/workflow-engine/definitions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

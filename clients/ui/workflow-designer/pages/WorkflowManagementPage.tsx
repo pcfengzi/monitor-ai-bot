@@ -17,7 +17,7 @@ export const WorkflowDesignerPage: React.FC = () => {
 
   const loadDefinitions = async () => {
     try {
-      const res = await fetch(`${API_BASE}/plugin-api/workflow-engine/workflow/definitions`);
+      const res = await fetch(`${API_BASE}/plugin-api/workflow-engine/definitions`);
       const data = await res.json();
       setDefs(data);
     } catch (e) {

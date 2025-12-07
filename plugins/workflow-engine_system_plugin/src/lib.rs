@@ -1,8 +1,9 @@
-// plugins/workflow-engine/src/lib.rs
+// plugins/workflow-engine_system_plugin/src/lib.rs
+
 use std::{
     ffi::CString,
     os::raw::c_char,
-    sync::Arc,
+    sync::{Arc, Once},
     thread,
 };
 
@@ -24,11 +25,15 @@ const PLUGIN_NAME: &str = "workflow-engine";
 const PLUGIN_VERSION: &str = "0.1.0";
 const PLUGIN_KIND: &str = "workflow";
 const API_PORT: u16 = 5601;
+// 注意：这里仍然是 /workflow，host 会用它拼 base_url=http://127.0.0.1:5601/workflow
 const API_PREFIX: &str = "/workflow";
 
 fn cstr(s: &str) -> *const c_char {
     CString::new(s).unwrap().into_raw()
 }
+
+// 只启动一个 HTTP server
+static SERVER_ONCE: Once = Once::new();
 
 // ====== Plugin ABI ======
 
@@ -51,18 +56,20 @@ pub extern "C" fn plugin_api_info() -> PluginApiInfo {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn run_with_ctx(_ctx: *mut PluginContext) {
-    // 插件里自己起一个线程 + tokio runtime，跑 HTTP 服务
-    thread::spawn(|| {
-        dotenv().ok();
-        let rt = Runtime::new().expect("创建 tokio runtime 失败");
-        rt.block_on(async {
-            if let Err(e) = start_server().await {
-                eprintln!("[workflow-engine] server error: {e:?}");
-            }
+    // host 会周期性调用 run_with_ctx，这里用 Once 确保 HTTP server 只起一次
+    SERVER_ONCE.call_once(|| {
+        thread::spawn(|| {
+            dotenv().ok();
+            let rt = Runtime::new().expect("创建 tokio runtime 失败");
+            rt.block_on(async {
+                if let Err(e) = start_server().await {
+                    eprintln!("[workflow-engine] server error: {e:?}");
+                }
+            });
         });
     });
 
-    // 注意：这里不要阻塞，host 会周期性调用插件
+    // 注意：这里不要阻塞，host 会周期性调用插件（目前我们也没在这里做额外逻辑）
 }
 
 // ====== 内部状态 & DB 结构 ======
@@ -146,24 +153,35 @@ async fn start_server() -> Result<(), sqlx::Error> {
 
     let state = AppState { pool };
 
+    // 这里的路由全部带上 `/workflow` 前缀，和 API_PREFIX 对齐
     let app = Router::new()
+        // 健康检查，可以同时保留根和带前缀两个
         .route("/health", get(health))
-        .route("/definitions", get(list_definitions).post(save_definition))
-        .route("/definitions/:id", get(get_definition))
-        .route("/run", post(run_workflow))
-        .route("/instances/:id", get(get_instance))
-        .route("/ai-generate", post(ai_generate))
+        .route("/workflow/health", get(health))
+        // 工作流定义相关接口：/workflow/definitions...
+        .route(
+            "/workflow/definitions",
+            get(list_definitions).post(save_definition),
+        )
+        .route("/workflow/definitions/:id", get(get_definition))
+        // 运行实例相关
+        .route("/workflow/run", post(run_workflow))
+        .route("/workflow/instances/:id", get(get_instance))
+        // AI 生成 LogicFlow JSON
+        .route("/workflow/ai-generate", post(ai_generate))
         .with_state(Arc::new(state));
 
-    let addr: SocketAddr = format!("127.0.0.1:{API_PORT}").parse().expect("invalid API_PORT or bind address");
+    let addr: SocketAddr = format!("127.0.0.1:{API_PORT}")
+        .parse()
+        .expect("invalid API_PORT or bind address");
     info!("[workflow-engine] HTTP server 启动于 http://{addr}{API_PREFIX}");
 
     let listener = tokio::net::TcpListener::bind(addr)
-    .await
-    .map_err(|e| {
-        error!("[workflow-engine] bind error: {e}");
-        sqlx::Error::Protocol(e.to_string().into())
-    })?;
+        .await
+        .map_err(|e| {
+            error!("[workflow-engine] bind error: {e}");
+            sqlx::Error::Protocol(e.to_string().into())
+        })?;
 
     axum::serve(listener, app)
         .await
@@ -178,7 +196,9 @@ async fn start_server() -> Result<(), sqlx::Error> {
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info".into());
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .try_init();
 }
 
 // ====== DB schema ======
@@ -226,7 +246,7 @@ async fn health() -> &'static str {
     "OK"
 }
 
-// GET /definitions
+// GET /workflow/definitions
 async fn list_definitions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<WorkflowDefinitionRow>>, String> {
@@ -261,7 +281,7 @@ async fn list_definitions(
     Ok(Json(defs))
 }
 
-// GET /definitions/:id
+// GET /workflow/definitions/:id
 async fn get_definition(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -280,10 +300,10 @@ async fn get_definition(
 
     let lf_json_val: serde_json::Value =
         serde_json::from_str(&row.3).map_err(|e| e.to_string())?;
-    
+
     let created_at_dt: DateTime<Utc> = row
         .4
-        .parse::<DateTime<Utc>>()            // 显式告诉 parse 要转成 DateTime<Utc>
+        .parse::<DateTime<Utc>>() // 显式告诉 parse 要转成 DateTime<Utc>
         .map_err(|e: chrono::ParseError| e.to_string())?;
     let updated_at_dt: DateTime<Utc> = row
         .5
@@ -300,13 +320,14 @@ async fn get_definition(
     }))
 }
 
-// POST /definitions
+// POST /workflow/definitions
 async fn save_definition(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SaveDefinitionRequest>,
 ) -> Result<Json<SaveDefinitionResponse>, String> {
     let now = Utc::now().to_rfc3339();
-    let lf_str = serde_json::to_string(&req.lf_json).map_err(|e| e.to_string())?;
+    let lf_str =
+        serde_json::to_string(&req.lf_json).map_err(|e| e.to_string())?;
 
     let id = if let Some(id) = req.id {
         sqlx::query(
@@ -347,7 +368,7 @@ async fn save_definition(
     Ok(Json(SaveDefinitionResponse { id }))
 }
 
-// POST /run
+// POST /workflow/run
 async fn run_workflow(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RunRequest>,
@@ -431,7 +452,7 @@ async fn run_workflow(
     }))
 }
 
-// GET /instances/:id
+// GET /workflow/instances/:id
 async fn get_instance(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -457,13 +478,12 @@ async fn get_instance(
     let finished_at: Option<DateTime<Utc>> = match row.5 {
         Some(s) => {
             let dt = s
-                .parse::<DateTime<Utc>>()       // 显式解析类型
+                .parse::<DateTime<Utc>>() // 显式解析类型
                 .map_err(|e| e.to_string())?;
             Some(dt)
         }
         None => None,
     };
-
 
     Ok(Json(WorkflowInstanceRow {
         id: row.0,
@@ -476,13 +496,12 @@ async fn get_instance(
     }))
 }
 
-// POST /ai-generate
+// POST /workflow/ai-generate
 async fn ai_generate(
     Json(req): Json<AiGenerateRequest>,
 ) -> Result<Json<AiGenerateResponse>, String> {
     // 先做一个非常简单的“规则引擎版”，以后再换成真 AI
     // 根据 prompt 拼一个 Start -> API -> End 三个节点的 LogicFlow JSON
-    // 你可以在这里接 GPT / DeepSeek：解析 prompt -> 构造节点数组
 
     let title = if req.prompt.trim().is_empty() {
         "新工作流"
