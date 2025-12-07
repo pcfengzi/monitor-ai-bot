@@ -1,0 +1,12 @@
+{
+  "name": "monitor-ai-bot",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "dashboard-frontend-react",
+    "clients/ui",
+    "clients/web-client",
+    "clients/desktop-client",
+    "clients/mobile-client"
+  ]
+}
